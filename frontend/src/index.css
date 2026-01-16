@@ -3,7 +3,8 @@
   --card-bg: #1a1a1a;
   --text-primary: #ededed;
   --text-secondary: #a1a1aa;
-  --accent-color: #f97316; /* Orange */
+  --accent-color: #f97316;
+  /* Orange */
   --border-color: #27272a;
 }
 
@@ -56,7 +57,8 @@ body {
   gap: 12px;
 }
 
-select, button.filter-btn {
+select,
+button.filter-btn {
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
@@ -66,7 +68,8 @@ select, button.filter-btn {
   transition: all 0.2s;
 }
 
-select:hover, button.filter-btn:hover {
+select:hover,
+button.filter-btn:hover {
   border-color: var(--accent-color);
   color: var(--text-primary);
 }
@@ -167,4 +170,63 @@ td {
 
 tr:last-child td {
   border-bottom: none;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .dashboard-container {
+    padding: 12px;
+  }
+
+  /* Stack Header Elements */
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .header>div {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  /* Filters */
+  .filters-bar {
+    justify-content: flex-start !important;
+    padding: 0 !important;
+    margin-top: 16px !important;
+    width: 100%;
+  }
+
+  .date-select {
+    width: 100%;
+  }
+
+  /* Metrics Grid: 2 columns on mobile instead of crushed row */
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  /* Bottom Grid: Stack Columns */
+  .bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Chart: Reduce padding */
+  .chart-section {
+    padding: 16px;
+  }
+
+  /* Table: Scrollable is already handled by overflow-x in JSX, checking layout */
+  th,
+  td {
+    padding: 8px 4px;
+    font-size: 0.75rem;
+  }
+
+  /* Client Selection Grid (Admin) */
+  .clients-grid {
+    grid-template-columns: 1fr !important;
+  }
 }
