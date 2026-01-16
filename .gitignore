@@ -1,0 +1,38 @@
+# Arquivos sensíveis - credenciais e tokens
+.env
+credentials.json
+token.json
+
+# Arquivos temporários
+.tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Ambientes virtuais
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+# Node
+node_modules/
+**/node_modules/
+dist/
+build/
+.npm
+.DS_Store
+
