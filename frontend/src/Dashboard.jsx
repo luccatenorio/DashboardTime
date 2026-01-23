@@ -17,6 +17,13 @@ const Dashboard = () => {
     const [dateRange, setDateRange] = useState('30')
     const [errorObj, setErrorObj] = useState(null)
     const [accessGranted, setAccessGranted] = useState(false)
+    const [isMobile, setIsMobile] = useState(window.innerWidth <= 768)
+
+    useEffect(() => {
+        const handleResize = () => setIsMobile(window.innerWidth <= 768)
+        window.addEventListener('resize', handleResize)
+        return () => window.removeEventListener('resize', handleResize)
+    }, [])
 
     useEffect(() => {
         fetchData()
@@ -435,15 +442,35 @@ const Dashboard = () => {
                     <ResponsiveContainer>
                         <ComposedChart data={chartData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                            <XAxis dataKey="dateFormatted" stroke="#71717a" tick={{ fontSize: 12 }} />
-                            <YAxis yAxisId="left" stroke="#71717a" tick={{ fontSize: 12 }} tickFormatter={(val) => `R$${val}`} />
-                            <YAxis yAxisId="right" orientation="right" stroke="#71717a" tick={{ fontSize: 12 }} />
+                            <XAxis
+                                dataKey="dateFormatted"
+                                stroke="#71717a"
+                                tick={{ fontSize: isMobile ? 10 : 12 }}
+                                interval={isMobile ? (dateRange === '30' ? 4 : 1) : 0}
+                            />
+                            <YAxis yAxisId="left" stroke="#71717a" tick={{ fontSize: 10 }} tickFormatter={(val) => `R$${val}`} />
+                            <YAxis yAxisId="right" orientation="right" stroke="#71717a" tick={{ fontSize: 10 }} />
                             <Tooltip
                                 contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', color: '#fff' }}
                                 itemStyle={{ color: '#fff' }}
                             />
-                            <Bar yAxisId="left" dataKey="investimento" fill="#3b82f6" name="Investimento" barSize={20} radius={[4, 4, 0, 0]} />
-                            <Line yAxisId="right" type="monotone" dataKey="leads" stroke="#f97316" strokeWidth={3} dot={{ r: 4, fill: '#f97316' }} name="Leads" />
+                            <Bar
+                                yAxisId="left"
+                                dataKey="investimento"
+                                fill="#3b82f6"
+                                name="Investimento"
+                                barSize={isMobile ? (dateRange === '30' ? 8 : 15) : 20}
+                                radius={[2, 2, 0, 0]}
+                            />
+                            <Line
+                                yAxisId="right"
+                                type="monotone"
+                                dataKey="leads"
+                                stroke="#f97316"
+                                strokeWidth={isMobile ? 2 : 3}
+                                dot={isMobile ? { r: 1, fill: '#f97316' } : { r: 4, fill: '#f97316' }}
+                                name="Leads"
+                            />
                         </ComposedChart>
                     </ResponsiveContainer>
                 </div>
