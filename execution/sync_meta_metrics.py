@@ -171,108 +171,102 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
     return insights
 
 
-def process_actions(actions: List[Dict], objective: str = None, campaign_name: str = "") -> tuple:
+def process_actions(actions: List[Dict], objective: str = None, campaign_name: str = "", insight_data: Dict = None) -> tuple:
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome)
-    Prioriza ações de conversão/resultados principais.
+    Prioriza ações conforme Regras de Negócio Estritas baseadas no Objetivo.
     """
-    if not actions:
+    if not actions and (objective != 'OUTCOME_AWARENESS'):
         return (0.0, None)
     
-    # Tratamento especial para Engajamento:
-    # Se for campanha de MENSAGEM (wpp, direct, etc), é estrito.
-    # Se for campanha de ENGAJAMENTO (post, video view, etc), aceita apenas post_engagement.
-    is_message_campaign = False
-    if campaign_name:
-        normalized_name = campaign_name.lower()
-        msg_keywords = ['mensagem', 'message', 'direct', 'whatsapp', 'wpp', 'chat', 'msg']
-        if any(k in normalized_name for k in msg_keywords):
-            is_message_campaign = True
+    # Normalização e Helpers
+    normalized_name = campaign_name.lower() if campaign_name else ""
+    msg_keywords = ['mensagem', 'message', 'direct', 'whatsapp', 'wpp', 'chat', 'msg']
+    is_message_campaign = any(k in normalized_name for k in msg_keywords)
 
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
 
-    # ---- LÓGICA DE SELEÇÃO DE MÉTRICA ----
-    
-    # 1. OUTCOME_ENGAGEMENT
-    if objective == 'OUTCOME_ENGAGEMENT':
-        if is_message_campaign:
-             # Campanha de mensagem: busca conversas iniciadas
-             pass # Segue prioridade padrão (messaging_conversation_started está no topo)
-        else:
-             # Campanha de engajamento genérico: busca estritamente 'post_engagement'
-             val = action_map.get('post_engagement', 0)
-             if val > 0:
-                 return (float(val), 'post_engagement')
-             return (0.0, None) # Não aceita clicks aqui
-             
-    # 2. OUTCOME_TRAFFIC ou OUTCOME_AWARENESS
-    if objective in ['OUTCOME_TRAFFIC', 'OUTCOME_AWARENESS']:
-        # Busca estritamente 'instagram_profile_visits'
-        val = action_map.get('instagram_profile_visits', 0)
-        # Fallback para profile visits se vier com outro nome (ex: checkin, ou variations)
-        # mas solicitado explícito instagram_profile_visits.
-        if val > 0:
-            return (float(val), 'instagram_profile_visits')
-        
-        # Se zerado, tenta outras actions de "Visita" se existirem, ou retorna zero?
-        # User requested: "PEGUE o valor da action instagram_profile_visits".
-        # Se não tiver, retorna 0 (ou tenta link_click se for Traffic? O user disse "Post do Instagram deve mostrar 300").
-        # O user disse "PEGUE o valor da action instagram_profile_visits".
-        # Vamos tentar link_click como fallback APENAS se for Traffic e profile_visit zerado?
-        # User: "Se campaign_objective == ... PEGUE o valor da action instagram_profile_visits"
-        # Vou arriscar um fallback para link_click se profile_visits for 0, mas priorizando profile_visits.
-        val_clicks = action_map.get('link_click', 0)
-        # Entretanto, o pedido foi "NÃO pegue clicks... PEGUE o valor de post_engagement" para Engagement.
-        # Para Traffic ele disse "PEGUE o valor da action instagram_profile_visits".
-        # Se eu não tiver esse valor, vai zerar. Vou adicionar fallback SEGURO para clicks se objetivo for TRAFEGO apenas.
-        if objective == 'OUTCOME_TRAFFIC' and val_clicks > 0:
-             # Se não achou profile_visits, mas tem click, usa click? O user reclamou de clicks em engagement.
-             # Vou manter estrito por enquanto. Se zerar, ajustamos.
-             return (0.0, None)
+    # ---- REGRAS DE NEGÓCIO (SWITCH/CASE POR OBJETIVO) ----
+
+    # CASE 1: OUTCOME_LEADS (Formulários)
+    if objective == 'OUTCOME_LEADS' or objective == 'LEAD_GENERATION':
+        # Prioriza 'lead' (formulário)
+        if 'lead' in action_map:
+            return (action_map['lead'], 'lead')
+        # Algumas vezes vem como 'leads' (plural) no ad manager antigo ou 'onsite_conversion.lead_grouped'
+        if 'leads' in action_map:
+             return (action_map['leads'], 'leads')
+        # Fallback seguro para mensagens se for lead de mensagem
+        if 'onsite_conversion.messaging_conversation_started_7d' in action_map:
+            return (action_map['onsite_conversion.messaging_conversation_started_7d'], 'onsite_conversion.messaging_conversation_started_7d')
+            
+    # CASE 2: OUTCOME_MESSAGES (Mensagem/WhatsApp/Direct)
+    # Obs: Algumas campanhas novas usam OUTCOME_ENGAGEMENT ou OUTCOME_LEADS com foco em msg
+    if objective == 'OUTCOME_MESSAGES' or objective == 'MESSAGES' or (objective == 'OUTCOME_ENGAGEMENT' and is_message_campaign):
+        target = 'onsite_conversion.messaging_conversation_started_7d'
+        if target in action_map:
+            return (action_map[target], target)
+        # Tenta fallback 1d view se 7d click não existir
+        if 'onsite_conversion.messaging_conversation_started_1d' in action_map:
+            return (action_map['onsite_conversion.messaging_conversation_started_1d'], 'onsite_conversion.messaging_conversation_started_1d')
+        # Se zerado, retorna 0 (NÃO usar cliques ou engajamento aqui)
         return (0.0, None)
 
-    # 3. OUTCOME_LEADS, OUTCOME_SALES, MESSAGES, etc (Padrão)
-    
-    # Mapa de prioridade para definir o que conta como "Resultado"
-    PRIORITY_ACTIONS = [
-        'onsite_conversion.messaging_conversation_started_7d',
-        'onsite_conversion.messaging_conversation_started_1d',
-        'lead',
-        'leads',
-        'offsite_conversion.fb_pixel_lead',
-        'purchase',
-        'initiate_checkout',
-        'add_to_cart',
-        'contact',
-        'schedule',
-        'submit_application',
-        'link_click', # Fallback para campanhas de LEADS/TRAFEGO se não for restrito
-        'post_engagement', 
-        'page_engagement',
-        'video_view' 
-    ]
-    
-    # Restaura lista STRICT original (sem engagement, pois já tratamos acima)
-    STRICT_OBJECTIVES = [
-        'OUTCOME_LEADS', 
-        'OUTCOME_SALES',
-        'LEAD_GENERATION',
-        'CONVERSIONS',
-        'MESSAGES'
-    ]
+    # CASE 3: OUTCOME_TRAFFIC (Foco em Perfil ou Link)
+    if objective == 'OUTCOME_TRAFFIC' or objective == 'TRAFFIC':
+        # Prioridade 1: Visitas ao Perfil (solicitação do User)
+        if 'instagram_profile_visits' in action_map:
+            return (action_map['instagram_profile_visits'], 'instagram_profile_visits')
+        
+        # Prioridade 2: Landing Page Views (qualificado)
+        if 'landing_page_view' in action_map:
+             return (action_map['landing_page_view'], 'landing_page_view')
+        
+        # Fallback: Link Clicks (apenas se não tiver os acima e for Tráfego)
+        # O user pediu para NÃO usar link_Click no Engajamento, mas no Tráfego é aceitável se visit profile for zero?
+        # User: "Se instagram_profile_visits não existir: Use landing_page_views." -> Não mencionou link_click.
+        # Vou seguir estritamente.
+        return (0.0, None)
 
-    # Tenta encontrar a ação prioritária
-    for action_type in PRIORITY_ACTIONS:
-        if action_type in action_map:
-            if action_type in ['link_click', 'post_engagement', 'page_engagement', 'video_view']:
-                if objective and objective in STRICT_OBJECTIVES:
-                    continue # Pula este fallback para objetivos estritos
-            
-            resultado_valor = action_map[action_type]
-            resultado_nome = action_type
-            return (float(resultado_valor), resultado_nome)
-            
-    # Se chegou aqui, não achou prioritária válida
+    # CASE 4: OUTCOME_ENGAGEMENT (Generic)
+    if objective == 'OUTCOME_ENGAGEMENT' or objective == 'POST_ENGAGEMENT' or objective == 'PAGE_LIKES' or objective == 'EVENT_RESPONSES':
+        # Já tratamos mensagem acima (if is_message_campaign). Se caiu aqui, é engajamento puro.
+        if 'post_engagement' in action_map:
+            return (action_map['post_engagement'], 'post_engagement')
+        if 'page_engagement' in action_map:
+            return (action_map['page_engagement'], 'page_engagement')
+        if 'video_view' in action_map:
+            return (action_map['video_view'], 'video_view')
+        return (0.0, None)
+
+    # CASE 5: OUTCOME_AWARENESS
+    if objective == 'OUTCOME_AWARENESS' or objective == 'BRAND_AWARENESS':
+        # Usa Reach ou Ad Recall. Reach vem do insight_data (passado como argumento)
+        reach_val = float(insight_data.get('reach', 0)) if insight_data else 0.0
+        if reach_val > 0:
+            return (reach_val, 'reach')
+        
+        if 'ad_recall' in action_map:
+            return (action_map['ad_recall'], 'ad_recall')
+        if 'estimated_ad_recallers' in action_map:
+             return (action_map['estimated_ad_recallers'], 'estimated_ad_recallers')
+        return (0.0, None)
+
+    # CASE DEFAULT/FALLBACK (Para objetivos antigos ou vendas)
+    # Se for OUTCOME_SALES, prioriza Purchase
+    if objective == 'OUTCOME_SALES' or objective == 'CONVERSIONS' or objective == 'PRODUCT_CATALOG_SALES':
+        if 'purchase' in action_map:
+            return (action_map['purchase'], 'purchase')
+        if 'add_to_cart' in action_map:
+            return (action_map['add_to_cart'], 'add_to_cart')
+        
+    # Último recurso se nada bater (evitar zerar tudo se tiver lead/msg perdido)
+    # mas mantendo a restrição de "não misturar vanity"
+    # Se tiver LEAD ou MESSAGE explícito, retorna, independente do objetivo (segurança)
+    for k in ['lead', 'leads', 'onsite_conversion.messaging_conversation_started_7d', 'purchase']:
+        if k in action_map:
+            return (action_map[k], k)
+
     return (0.0, None)
 
 
@@ -327,7 +321,7 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                     
                     # Processar ações
                     actions = insight.get('actions', [])
-                    resultado_valor, resultado_nome = process_actions(actions, campaign.get('objective'), campaign_name)
+                    resultado_valor, resultado_nome = process_actions(actions, campaign.get('objective'), campaign_name, insight)
                     
                     # Preparar dados para inserção
                     metric_data = {
