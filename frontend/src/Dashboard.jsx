@@ -162,6 +162,34 @@ const Dashboard = () => {
 
     // --- DATA PROCESSING (Restored) ---
 
+    // Metric Classification
+    const COMMERCIAL_METRICS = [
+        'lead', 'leads',
+        'onsite_conversion.messaging_conversation_started_7d',
+        'onsite_conversion.messaging_conversation_started_1d',
+        'offsite_conversion.fb_pixel_lead',
+        'purchase',
+        'initiate_checkout',
+        'add_to_cart',
+        'contact',
+        'schedule',
+        'submit_application'
+    ]
+
+    const VANITY_METRICS = [
+        'link_click',
+        'post_engagement',
+        'page_engagement',
+        'video_view',
+        'instagram_profile_visits',
+        'thumbs_up'
+    ]
+
+    const isCommercial = (metricName) => {
+        if (!metricName) return false
+        return COMMERCIAL_METRICS.includes(metricName) || COMMERCIAL_METRICS.some(m => metricName.includes(m))
+    }
+
     // Filter and Aggregate Data
     const filteredData = useMemo(() => {
         if (!Array.isArray(metrics)) return []
@@ -186,13 +214,21 @@ const Dashboard = () => {
 
     // Aggregate for Scorecards
     const totals = useMemo(() => {
-        return filteredData.reduce((acc, curr) => ({
-            investimento: acc.investimento + (Number(curr.investimento) || 0),
-            impressions: acc.impressions + (Number(curr.impressoes) || 0),
-            clicks: acc.clicks + (Number(curr.cliques_link) || 0),
-            reach: acc.reach + (Number(curr.alcance) || 0),
-            leads: acc.leads + (Number(curr.resultado_valor) || 0)
-        }), { investimento: 0, impressions: 0, clicks: 0, reach: 0, leads: 0 })
+        return filteredData.reduce((acc, curr) => {
+            const val = Number(curr.resultado_valor) || 0
+            const name = curr.resultado_nome
+
+            const isComm = isCommercial(name)
+
+            return {
+                investimento: acc.investimento + (Number(curr.investimento) || 0),
+                impressions: acc.impressions + (Number(curr.impressoes) || 0),
+                clicks: acc.clicks + (Number(curr.cliques_link) || 0),
+                reach: acc.reach + (Number(curr.alcance) || 0),
+                leads: acc.leads + (isComm ? val : 0),
+                engagement: acc.engagement + (!isComm ? val : 0)
+            }
+        }, { investimento: 0, impressions: 0, clicks: 0, reach: 0, leads: 0, engagement: 0 })
     }, [filteredData])
 
     // Computed Metrics
@@ -207,10 +243,16 @@ const Dashboard = () => {
             if (!date) return acc // Skip invalid dates
 
             if (!acc[date]) {
-                acc[date] = { date, investimento: 0, leads: 0, clicks: 0, impressions: 0 }
+                acc[date] = { date, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
             }
+
+            const val = Number(curr.resultado_valor) || 0
+            const name = curr.resultado_nome
+            const isComm = isCommercial(name)
+
             acc[date].investimento += (Number(curr.investimento) || 0)
-            acc[date].leads += (Number(curr.resultado_valor) || 0)
+            acc[date].leads += (isComm ? val : 0)
+            acc[date].engagement += (!isComm ? val : 0)
             acc[date].clicks += (Number(curr.cliques_link) || 0)
             acc[date].impressions += (Number(curr.impressoes) || 0)
             return acc
@@ -231,10 +273,16 @@ const Dashboard = () => {
         const grouped = filteredData.reduce((acc, curr) => {
             const name = curr.campaign_name || 'Desconhecida'
             if (!acc[name]) {
-                acc[name] = { name, investimento: 0, leads: 0, clicks: 0, impressions: 0 }
+                acc[name] = { name, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
             }
+
+            const val = Number(curr.resultado_valor) || 0
+            const resName = curr.resultado_nome
+            const isComm = isCommercial(resName)
+
             acc[name].investimento += (Number(curr.investimento) || 0)
-            acc[name].leads += (Number(curr.resultado_valor) || 0)
+            acc[name].leads += (isComm ? val : 0)
+            acc[name].engagement += (!isComm ? val : 0)
             acc[name].clicks += (Number(curr.cliques_link) || 0)
             acc[name].impressions += (Number(curr.impressoes) || 0)
             return acc
@@ -244,7 +292,8 @@ const Dashboard = () => {
             ...c,
             ctr: c.impressions > 0 ? (c.clicks / c.impressions) * 100 : 0,
             cpl: c.leads > 0 ? (c.investimento / c.leads) : 0,
-            cpm: c.impressions > 0 ? (c.investimento / c.impressions) * 1000 : 0
+            cpm: c.impressions > 0 ? (c.investimento / c.impressions) * 1000 : 0,
+            type: c.leads > 0 ? 'Lead' : 'Engajamento' // Helper for UI
         }))
     }, [filteredData])
 
@@ -426,8 +475,9 @@ const Dashboard = () => {
             {/* Metrics Grid */}
             <div className="metrics-grid">
                 <MetricCard title="Investimento" value={formatCurrency(totals.investimento)} sub="Total gasto" icon={<DollarSign size={16} />} />
-                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Resultados" icon={<Users size={16} />} highlight />
-                <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<Activity size={16} />} />
+                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Comerciais" icon={<Users size={16} />} highlight />
+                <MetricCard title="Engajamento" value={formatNumber(totals.engagement)} sub="Vanity Metrics" icon={<Activity size={16} />} />
+                <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<DollarSign size={16} />} />
                 <MetricCard title="Alcance" value={formatNumber(totals.reach)} sub="Pessoas" icon={<Eye size={16} />} />
                 <MetricCard title="Impressões" value={formatNumber(totals.impressions)} sub="Total" icon={<Eye size={16} />} />
                 <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1k Imp" icon={<TrendingUp size={16} />} />
@@ -438,7 +488,7 @@ const Dashboard = () => {
             {/* Main Chart */}
             <div className="chart-section">
                 <div className="section-title">
-                    <span>Tendência de Performance</span>
+                    <span>Tendência de Performance (Leads Comerciais)</span>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                         <span style={{ color: '#3b82f6' }}>● Investimento</span> <span style={{ color: '#f97316', marginLeft: '10px' }}>● Leads</span>
                     </div>
@@ -490,9 +540,10 @@ const Dashboard = () => {
                             <thead>
                                 <tr>
                                     <th>Campanha</th>
+                                    <th>Tipo</th>
                                     <th>Investimento</th>
-                                    <th>Leads</th>
-                                    <th>CPL</th>
+                                    <th>Resultados</th>
+                                    <th>CPL / CPA</th>
                                     <th>CTR</th>
                                 </tr>
                             </thead>
@@ -500,9 +551,22 @@ const Dashboard = () => {
                                 {campaignData.map((c, i) => (
                                     <tr key={i}>
                                         <td style={{ maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
+                                        <td>
+                                            <span style={{
+                                                padding: '2px 8px',
+                                                borderRadius: '4px',
+                                                fontSize: '0.75rem',
+                                                background: c.type === 'Lead' ? 'rgba(249, 115, 22, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                                                color: c.type === 'Lead' ? '#f97316' : '#3b82f6'
+                                            }}>
+                                                {c.type}
+                                            </span>
+                                        </td>
                                         <td>{formatCurrency(c.investimento)}</td>
-                                        <td>{c.leads}</td>
-                                        <td>{formatCurrency(c.cpl)}</td>
+                                        <td>
+                                            {c.type === 'Lead' ? c.leads : c.engagement}
+                                        </td>
+                                        <td>{formatCurrency(c.type === 'Lead' ? c.cpl : (c.engagement > 0 ? c.investimento / c.engagement : 0))}</td>
                                         <td>{formatPercent(c.ctr)}</td>
                                     </tr>
                                 ))}
@@ -555,6 +619,7 @@ const Dashboard = () => {
                                     <th>Data</th>
                                     <th>Investimento</th>
                                     <th>Leads</th>
+                                    <th>Engajamento</th>
                                     <th>CPL</th>
                                     <th>Cliques</th>
                                     <th>CTR</th>
@@ -567,6 +632,7 @@ const Dashboard = () => {
                                         <td>{row.dateFormatted}</td>
                                         <td>{formatCurrency(row.investimento)}</td>
                                         <td>{row.leads}</td>
+                                        <td>{row.engagement}</td>
                                         <td>{formatCurrency(row.cpl)}</td>
                                         <td>{row.clicks}</td>
                                         <td>{formatPercent(row.ctr)}</td>
