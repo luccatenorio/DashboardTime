@@ -474,12 +474,11 @@ const Dashboard = () => {
             </div>
             {/* Metrics Grid */}
             <div className="metrics-grid">
-                <MetricCard title="Investimento" value={formatCurrency(totals.investimento)} sub="Total gasto" icon={<DollarSign size={16} />} />
-                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Comerciais" icon={<Users size={16} />} highlight />
-                <MetricCard title="Engajamento" value={formatNumber(totals.engagement)} sub="Vanity Metrics" icon={<Activity size={16} />} />
+                <MetricCard title="Investimento" value={formatCurrency(totals.investimento)} sub="Valor Gasto" icon={<DollarSign size={16} />} />
+                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Contatos" icon={<Users size={16} />} highlight />
                 <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<DollarSign size={16} />} />
-                <MetricCard title="Alcance" value={formatNumber(totals.reach)} sub="Pessoas" icon={<Eye size={16} />} />
-                <MetricCard title="Impressões" value={formatNumber(totals.impressions)} sub="Total" icon={<Eye size={16} />} />
+                <MetricCard title="Alcance" value={formatNumber(totals.reach)} sub="Contas Alcançadas" icon={<Eye size={16} />} />
+                <MetricCard title="Impressões" value={formatNumber(totals.impressions)} sub="Exibições" icon={<Eye size={16} />} />
                 <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1k Imp" icon={<TrendingUp size={16} />} />
                 <MetricCard title="Cliques Link" value={formatNumber(totals.clicks)} sub="Total" icon={<MousePointer2 size={16} />} />
                 <MetricCard title="CTR" value={formatPercent(ctr)} sub="Taxa Clique" icon={<MousePointer2 size={16} />} />
@@ -488,7 +487,7 @@ const Dashboard = () => {
             {/* Main Chart */}
             <div className="chart-section">
                 <div className="section-title">
-                    <span>Tendência de Performance (Leads Comerciais)</span>
+                    <span>Tendência de Performance</span>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                         <span style={{ color: '#3b82f6' }}>● Investimento</span> <span style={{ color: '#f97316', marginLeft: '10px' }}>● Leads</span>
                     </div>
@@ -540,9 +539,8 @@ const Dashboard = () => {
                             <thead>
                                 <tr>
                                     <th>Campanha</th>
-                                    <th>Tipo</th>
                                     <th>Investimento</th>
-                                    <th>Resultados</th>
+                                    <th>Resultados (Leads)</th>
                                     <th>CPL / CPA</th>
                                     <th>CTR</th>
                                 </tr>
@@ -551,22 +549,9 @@ const Dashboard = () => {
                                 {campaignData.map((c, i) => (
                                     <tr key={i}>
                                         <td style={{ maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
-                                        <td>
-                                            <span style={{
-                                                padding: '2px 8px',
-                                                borderRadius: '4px',
-                                                fontSize: '0.75rem',
-                                                background: c.type === 'Lead' ? 'rgba(249, 115, 22, 0.2)' : 'rgba(59, 130, 246, 0.2)',
-                                                color: c.type === 'Lead' ? '#f97316' : '#3b82f6'
-                                            }}>
-                                                {c.type}
-                                            </span>
-                                        </td>
                                         <td>{formatCurrency(c.investimento)}</td>
-                                        <td>
-                                            {c.type === 'Lead' ? c.leads : c.engagement}
-                                        </td>
-                                        <td>{formatCurrency(c.type === 'Lead' ? c.cpl : (c.engagement > 0 ? c.investimento / c.engagement : 0))}</td>
+                                        <td>{c.leads}</td>
+                                        <td>{formatCurrency(c.cpl)}</td>
                                         <td>{formatPercent(c.ctr)}</td>
                                     </tr>
                                 ))}
@@ -619,7 +604,6 @@ const Dashboard = () => {
                                     <th>Data</th>
                                     <th>Investimento</th>
                                     <th>Leads</th>
-                                    <th>Engajamento</th>
                                     <th>CPL</th>
                                     <th>Cliques</th>
                                     <th>CTR</th>
@@ -632,7 +616,6 @@ const Dashboard = () => {
                                         <td>{row.dateFormatted}</td>
                                         <td>{formatCurrency(row.investimento)}</td>
                                         <td>{row.leads}</td>
-                                        <td>{row.engagement}</td>
                                         <td>{formatCurrency(row.cpl)}</td>
                                         <td>{row.clicks}</td>
                                         <td>{formatPercent(row.ctr)}</td>
@@ -643,6 +626,17 @@ const Dashboard = () => {
                         </table>
                     </div>
                 </div>
+            </div>
+
+            <div style={{
+                marginTop: '30px',
+                textAlign: 'center',
+                color: '#666',
+                fontSize: '0.8rem',
+                padding: '20px',
+                borderTop: '1px solid rgba(255,255,255,0.05)'
+            }}>
+                Atualizado em: {new Date().toLocaleString('pt-BR')}
             </div>
         </div>
     )
