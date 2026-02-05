@@ -104,7 +104,7 @@ def get_campaigns(ad_account_id: str) -> List[Dict]:
     url = f"{META_BASE_URL}/{ad_account_id}/campaigns"
     params = {
         "access_token": META_ACCESS_TOKEN,
-        "fields": "id,name,status,created_time",
+        "fields": "id,name,status,created_time,objective",
         "limit": 100
     }
     
@@ -171,20 +171,31 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
     return insights
 
 
-def process_actions(actions: List[Dict]) -> tuple:
+def process_actions(actions: List[Dict], objective: str = None) -> tuple:
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome)
     Prioriza ações de conversão/resultados principais.
     """
     if not actions:
-        return (0, None)
+        return (0.0, None)
+    
+    # Objetivos que NÃO devem cair em fallback de cliques/impressões/engajamento
+    STRICT_OBJECTIVES = [
+        'OUTCOME_LEADS', 
+        'OUTCOME_SALES',
+        'LEAD_GENERATION',
+        'CONVERSIONS',
+        'MESSAGES',
+        'OUTCOME_ENGAGEMENT' # Para engajamento, queremos msg ou views, não link clicks geralmente
+    ]
     
     # Mapa de prioridade para definir o que conta como "Resultado"
-    # Ordem de prioridade para buscar o resultado principal
     PRIORITY_ACTIONS = [
         'onsite_conversion.messaging_conversation_started_7d',
         'onsite_conversion.messaging_conversation_started_1d',
+        'lead',
         'leads',
+        'offsite_conversion.fb_pixel_lead',
         'purchase',
         'initiate_checkout',
         'add_to_cart',
@@ -204,25 +215,19 @@ def process_actions(actions: List[Dict]) -> tuple:
     # Tenta encontrar a ação prioritária
     for action_type in PRIORITY_ACTIONS:
         if action_type in action_map:
+            # Lógica de proteção:
+            # Se achamos 'link_click', 'post_engagement' ou 'page_engagement',
+            # só aceitamos se o objetivo NÃO for estrito.
+            if action_type in ['link_click', 'post_engagement', 'page_engagement']:
+                if objective and objective in STRICT_OBJECTIVES:
+                    continue # Pula este fallback
+            
             resultado_valor = action_map[action_type]
             resultado_nome = action_type
-            break
+            return (float(resultado_valor), resultado_nome)
             
-    # Se não encontrou nenhuma das prioritárias, pega a com maior valor
-    # MAS exclui métricas agregadas que podem inflar o número (ex: total_messaging_connection)
-    if resultado_nome is None and action_map:
-        # Filtrar chaves indesejadas
-        filtered_map = {k: v for k, v in action_map.items() if 'total_messaging_connection' not in k}
-        
-        if filtered_map:
-            resultado_nome = max(filtered_map, key=filtered_map.get)
-            resultado_valor = filtered_map[resultado_nome]
-        else:
-            # Se só sobrou lixo, retorna 0
-            resultado_nome = None
-            resultado_valor = 0.0
-
-    return (float(resultado_valor), resultado_nome)
+    # Se chegou aqui, não achou prioritária válida
+    return (0.0, None)
 
 
 def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
@@ -253,7 +258,7 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
             # Pular campanhas arquivadas se desejar otimizar mais
             # if campaign_status == 'ARCHIVED': continue
             
-            print(f"   Campanha: {campaign_name} ({campaign_status})")
+            print(f"   Campanha: {campaign_name} ({campaign_status}) - Obj: {campaign.get('objective')}")
             
             try:
                 # Buscar insights históricos (últimos 30 dias por padrão)
@@ -276,7 +281,7 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                     
                     # Processar ações
                     actions = insight.get('actions', [])
-                    resultado_valor, resultado_nome = process_actions(actions)
+                    resultado_valor, resultado_nome = process_actions(actions, campaign.get('objective'))
                     
                     # Preparar dados para inserção
                     metric_data = {
@@ -294,42 +299,50 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                     
                     metrics_to_insert.append(metric_data)
                 
+                # Buscar IDs existentes para garantir UPDATE correto (evitar duplicatas)
+                # Formar lista de chaves para busca
+                dates = [m['data_referencia'] for m in metrics_to_insert]
+                existing_map = {}
+                
+                if dates:
+                    try:
+                        # Buscar registros existentes para este cliente/campanha nessas datas
+                        existing_response = supabase.table("dashboard_campaign_metrics").select("id, data_referencia")\
+                            .eq("client_id", client_id)\
+                            .eq("campaign_id", campaign_id)\
+                            .in_("data_referencia", dates)\
+                            .execute()
+                        
+                        if existing_response.data:
+                            for row in existing_response.data:
+                                existing_map[row['data_referencia']] = row['id']
+                    except Exception as e:
+                        print(f"      ⚠️  Erro ao buscar existentes: {str(e)}")
+
+                # Atualizar metric_data com IDs existentes
+                for metric in metrics_to_insert:
+                    if metric['data_referencia'] in existing_map:
+                        metric['id'] = existing_map[metric['data_referencia']]
+
                 # Inserir/atualizar no Supabase em batch
                 if metrics_to_insert:
-                    # Usar upsert - Supabase faz upsert automaticamente se houver constraint única
-                    # Caso contrário, vamos inserir em batch e tratar conflitos
                     batch_size = 50
                     inserted_count = 0
                     
                     for i in range(0, len(metrics_to_insert), batch_size):
                         batch = metrics_to_insert[i:i + batch_size]
                         try:
-                            # Tentar inserir/atualizar em batch
+                            # Upsert deve funcionar agora que temos IDs para os existentes
                             result = supabase.table("dashboard_campaign_metrics").upsert(
                                 batch
                             ).execute()
                             inserted_count += len(batch)
                         except Exception as e:
                             # Se batch falhar, tentar individualmente
-                            print(f"      ⚠️  Erro no batch, tentando individualmente...")
+                            print(f"      ⚠️  Erro no batch, tentando individualmente: {str(e)}")
                             for metric in batch:
                                 try:
-                                    # Verificar se já existe
-                                    existing = supabase.table("dashboard_campaign_metrics").select("id").eq(
-                                        "client_id", metric["client_id"]
-                                    ).eq("campaign_id", metric["campaign_id"]).eq(
-                                        "data_referencia", metric["data_referencia"]
-                                    ).execute()
-                                    
-                                    if existing.data:
-                                        # Atualizar
-                                        supabase.table("dashboard_campaign_metrics").update(metric).eq(
-                                            "id", existing.data[0]["id"]
-                                        ).execute()
-                                    else:
-                                        # Inserir
-                                        supabase.table("dashboard_campaign_metrics").insert(metric).execute()
-                                    
+                                    supabase.table("dashboard_campaign_metrics").upsert(metric).execute()
                                     inserted_count += 1
                                 except Exception as e2:
                                     print(f"      ERRO: Erro ao inserir metrica para {metric['data_referencia']}: {str(e2)}")
@@ -357,12 +370,20 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                  {"ad_account_id": ad_account_id})
 
 
+import argparse
+
 def main():
     """
     Função principal: busca clientes ativos e sincroniza métricas
     """
+    parser = argparse.ArgumentParser(description='Sincronizar métricas do Meta Ads.')
+    parser.add_argument('--client', type=str, help='Nome (ou parte do nome) do cliente para sincronizar apenas ele.')
+    args = parser.parse_args()
+
     print("=" * 60)
     print("Iniciando sincronizacao Meta -> Supabase")
+    if args.client:
+        print(f"MODO FILTRADO: Apenas clientes contendo '{args.client}'")
     print("=" * 60)
     print(f"Data/Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
@@ -377,8 +398,19 @@ def main():
         if not clients:
             print("AVISO: Nenhum cliente ativo encontrado")
             return
+            
+        # Filtrar se argumento foi passado
+        if args.client:
+            filtered_clients = [
+                c for c in clients 
+                if args.client.lower() in c.get('cliente', '').lower()
+            ]
+            if not filtered_clients:
+                 print(f"AVISO: Nenhum cliente encontrado com o termo '{args.client}'")
+                 return
+            clients = filtered_clients
         
-        print(f"OK: {len(clients)} cliente(s) ativo(s) encontrado(s)\n")
+        print(f"OK: {len(clients)} cliente(s) para processar\n")
         
         # Processar cada cliente
         for client in clients:

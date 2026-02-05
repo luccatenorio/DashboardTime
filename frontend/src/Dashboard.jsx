@@ -177,7 +177,9 @@ const Dashboard = () => {
         const today = new Date()
         const cutoffDate = new Date()
         cutoffDate.setDate(today.getDate() - parseInt(dateRange))
-        const cutoffStr = cutoffDate.toISOString().split('T')[0]
+        const cutoffStr = cutoffDate.getFullYear() + '-' +
+            String(cutoffDate.getMonth() + 1).padStart(2, '0') + '-' +
+            String(cutoffDate.getDate()).padStart(2, '0')
 
         return data.filter(m => m.data_referencia && m.data_referencia >= cutoffStr)
     }, [metrics, selectedClient, dateRange])
@@ -217,7 +219,7 @@ const Dashboard = () => {
         // Sort by date
         return Object.values(grouped).sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(item => ({
             ...item,
-            dateFormatted: new Date(item.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+            dateFormatted: new Date(item.date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
             ctr: item.impressions > 0 ? (item.clicks / item.impressions) * 100 : 0,
             cpm: item.impressions > 0 ? (item.investimento / item.impressions) * 1000 : 0,
             cpl: item.leads > 0 ? (item.investimento / item.leads) : 0
@@ -253,7 +255,10 @@ const Dashboard = () => {
 
     // Today's Data
     const todayStats = useMemo(() => {
-        const todayStr = new Date().toISOString().split('T')[0]
+        const today = new Date()
+        const todayStr = today.getFullYear() + '-' +
+            String(today.getMonth() + 1).padStart(2, '0') + '-' +
+            String(today.getDate()).padStart(2, '0')
         const todayItem = chartData.find(d => d.date === todayStr) || {
             investimento: 0, leads: 0, cpl: 0
         }
