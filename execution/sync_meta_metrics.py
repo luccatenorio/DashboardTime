@@ -139,6 +139,7 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
     
         # Meta tem limite de 37 meses para insights
         # Usamos 30 dias para garantir dados recentes e performance rápida (solicitação do usuário)
+        # (Execução pontual de 90 dias feita para limpeza)
         since_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     
     url = f"{META_BASE_URL}/{campaign_id}/insights"
@@ -174,99 +175,62 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
 def process_actions(actions: List[Dict], objective: str = None, campaign_name: str = "", insight_data: Dict = None) -> tuple:
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome)
-    Prioriza ações conforme Regras de Negócio Estritas baseadas no Objetivo.
+    
+    NOVA LÓGICA ESTRITA (Simplificada):
+    - LEADS/CADASTROS -> actions.lead
+    - MENSAGEM -> actions.onsite_conversion.messaging_conversation_started_7d
+    - OUTROS (Tráfego, Engajamento, Awareness) -> 0 (Zero Leads)
     """
-    if not actions and (objective != 'OUTCOME_AWARENESS'):
+    if not actions:
         return (0.0, None)
     
-    # Normalização e Helpers
-    normalized_name = campaign_name.lower() if campaign_name else ""
-    msg_keywords = ['mensagem', 'message', 'direct', 'whatsapp', 'wpp', 'chat', 'msg']
-    is_message_campaign = any(k in normalized_name for k in msg_keywords)
-
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
-
-    # ---- REGRAS DE NEGÓCIO (SWITCH/CASE POR OBJETIVO) ----
-
-    # CASE 1: OUTCOME_LEADS (Formulários)
-    if objective == 'OUTCOME_LEADS' or objective == 'LEAD_GENERATION':
-        # Prioriza 'lead' (formulário)
-        if 'lead' in action_map:
-            return (action_map['lead'], 'lead')
-        # Algumas vezes vem como 'leads' (plural) no ad manager antigo ou 'onsite_conversion.lead_grouped'
-        if 'leads' in action_map:
-             return (action_map['leads'], 'leads')
-        # Fallback seguro para mensagens se for lead de mensagem
+    
+    # 1. OUTCOME_MESSAGES (ou MESSAGES) e ENGAJAMENTO COM MENSAGEM (Vicente)
+    # A regra é estrita: Só conta se tiver CONVERSA INICIADA.
+    # Se for Engajamento mas tiver conversa, conta como Lead Comercial (para não perder dados do Vicente).
+    if objective in ['OUTCOME_MESSAGES', 'MESSAGES', 'OUTCOME_ENGAGEMENT']:
+        # Prioridade: Conversas iniciadas (7d)
         if 'onsite_conversion.messaging_conversation_started_7d' in action_map:
             return (action_map['onsite_conversion.messaging_conversation_started_7d'], 'onsite_conversion.messaging_conversation_started_7d')
-            
-    # CASE 2: OUTCOME_MESSAGES (Mensagem/WhatsApp/Direct)
-    # Obs: Algumas campanhas novas usam OUTCOME_ENGAGEMENT ou OUTCOME_LEADS com foco em msg
-    if objective == 'OUTCOME_MESSAGES' or objective == 'MESSAGES' or (objective == 'OUTCOME_ENGAGEMENT' and is_message_campaign):
-        target = 'onsite_conversion.messaging_conversation_started_7d'
-        if target in action_map:
-            return (action_map[target], target)
-        # Tenta fallback 1d view se 7d click não existir
+        # Fallback para 1d
         if 'onsite_conversion.messaging_conversation_started_1d' in action_map:
-            return (action_map['onsite_conversion.messaging_conversation_started_1d'], 'onsite_conversion.messaging_conversation_started_1d')
-        # Se zerado, retorna 0 (NÃO usar cliques ou engajamento aqui)
-        return (0.0, None)
-
-    # CASE 3: OUTCOME_TRAFFIC (Foco em Perfil ou Link)
-    if objective == 'OUTCOME_TRAFFIC' or objective == 'TRAFFIC':
-        # Prioridade 1: Visitas ao Perfil (solicitação do User)
-        if 'instagram_profile_visits' in action_map:
-            return (action_map['instagram_profile_visits'], 'instagram_profile_visits')
+             return (action_map['onsite_conversion.messaging_conversation_started_1d'], 'onsite_conversion.messaging_conversation_started_1d')
+             
+        # SE FOR OUTCOME_ENGAGEMENT e não tiver mensagem -> Cai no return (0.0, None) abaixo?
+        # Não, o loop continua ou retorna?
+        # Se for MESSAGES puro e não tiver nada, devia retornar 0.
+        # Se for ENGAGEMENT e não tiver msg, NÃO deve pegar post_engagement (pois é vanity).
         
-        # Prioridade 2: Landing Page Views (qualificado)
-        if 'landing_page_view' in action_map:
-             return (action_map['landing_page_view'], 'landing_page_view')
+        # Então, se entrou aqui e não achou msg:
+        if objective in ['OUTCOME_MESSAGES', 'MESSAGES']:
+            return (0.0, None) # Mensagem sem conversa = 0
+            
+        # Se for ENGAGEMENT e não achou msg, deixa passar para checar se é LEAD (vai que...) 
+        # ou cai no final 0.0
+
         
-        # Fallback: Link Clicks (apenas se não tiver os acima e for Tráfego)
-        # O user pediu para NÃO usar link_Click no Engajamento, mas no Tráfego é aceitável se visit profile for zero?
-        # User: "Se instagram_profile_visits não existir: Use landing_page_views." -> Não mencionou link_click.
-        # Vou seguir estritamente.
-        return (0.0, None)
-
-    # CASE 4: OUTCOME_ENGAGEMENT (Generic)
-    if objective == 'OUTCOME_ENGAGEMENT' or objective == 'POST_ENGAGEMENT' or objective == 'PAGE_LIKES' or objective == 'EVENT_RESPONSES':
-        # Já tratamos mensagem acima (if is_message_campaign). Se caiu aqui, é engajamento puro.
-        if 'post_engagement' in action_map:
-            return (action_map['post_engagement'], 'post_engagement')
-        if 'page_engagement' in action_map:
-            return (action_map['page_engagement'], 'page_engagement')
-        if 'video_view' in action_map:
-            return (action_map['video_view'], 'video_view')
-        return (0.0, None)
-
-    # CASE 5: OUTCOME_AWARENESS
-    if objective == 'OUTCOME_AWARENESS' or objective == 'BRAND_AWARENESS':
-        # Usa Reach ou Ad Recall. Reach vem do insight_data (passado como argumento)
-        reach_val = float(insight_data.get('reach', 0)) if insight_data else 0.0
-        if reach_val > 0:
-            return (reach_val, 'reach')
+    # 2. OUTCOME_LEADS (ou LEAD_GENERATION)
+    if objective in ['OUTCOME_LEADS', 'LEAD_GENERATION', 'OUTCOME_SALES', 'CONVERSIONS', 'PRODUCT_CATALOG_SALES']:
+        # Adicionei SALES/CONVERSIONS aqui pois são resultados comerciais também (Compras são "Leads" comerciais no contexto geral)
         
-        if 'ad_recall' in action_map:
-            return (action_map['ad_recall'], 'ad_recall')
-        if 'estimated_ad_recallers' in action_map:
-             return (action_map['estimated_ad_recallers'], 'estimated_ad_recallers')
-        return (0.0, None)
-
-    # CASE DEFAULT/FALLBACK (Para objetivos antigos ou vendas)
-    # Se for OUTCOME_SALES, prioriza Purchase
-    if objective == 'OUTCOME_SALES' or objective == 'CONVERSIONS' or objective == 'PRODUCT_CATALOG_SALES':
+        # Prioridade 1: Leads (Cadastros)
+        if 'lead' in action_map:
+            return (action_map['lead'], 'lead')
+        if 'leads' in action_map:
+            return (action_map['leads'], 'leads')
+            
+        # Prioridade 2: Compras/Checkout (para Sales)
         if 'purchase' in action_map:
             return (action_map['purchase'], 'purchase')
-        if 'add_to_cart' in action_map:
-            return (action_map['add_to_cart'], 'add_to_cart')
-        
-    # Último recurso se nada bater (evitar zerar tudo se tiver lead/msg perdido)
-    # mas mantendo a restrição de "não misturar vanity"
-    # Se tiver LEAD ou MESSAGE explícito, retorna, independente do objetivo (segurança)
-    for k in ['lead', 'leads', 'onsite_conversion.messaging_conversation_started_7d', 'purchase']:
-        if k in action_map:
-            return (action_map[k], k)
+            
+        # Prioridade 3: Mensagens (se for campanha de Lead para Msg)
+        if 'onsite_conversion.messaging_conversation_started_7d' in action_map:
+             return (action_map['onsite_conversion.messaging_conversation_started_7d'], 'onsite_conversion.messaging_conversation_started_7d')
 
+    # 3. QUALQUER OUTRO CASO (Traffic, Engagement, Awareness)
+    # Retorna ZERO para não poluir o CPL.
+    # O cliente quer ver o gasto, mas resultado 0.
     return (0.0, None)
 
 
