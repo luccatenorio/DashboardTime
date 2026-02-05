@@ -18,6 +18,7 @@ const Dashboard = () => {
     const [errorObj, setErrorObj] = useState(null)
     const [accessGranted, setAccessGranted] = useState(false)
     const [isMobile, setIsMobile] = useState(window.innerWidth <= 768)
+    const [clientDetails, setClientDetails] = useState(null) // metadata like sync time, totals
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -39,6 +40,7 @@ const Dashboard = () => {
             setErrorObj(null)
             setAccessGranted(false) // Reset access
             setIsAdmin(false)
+            setClientDetails(null)
             // setSelectedClient(null) // REMOVED: Don't force reset selected client on re-fetch
 
             // Hash Routing Logic
@@ -68,7 +70,7 @@ const Dashboard = () => {
                 console.log('Fetching Clients for Admin...')
                 const { data: clientsData, error: clientsError } = await supabase
                     .from('clients')
-                    .select('id, cliente')
+                    .select('*')
                     .eq('ativo', true)
                     .order('cliente')
 
@@ -82,7 +84,7 @@ const Dashboard = () => {
             // Find client by hash (stored in observacoes)
             const { data: clientData, error: clientError } = await supabase
                 .from('clients')
-                .select('id, cliente')
+                .select('*')
                 .eq('observacoes', code)
                 .maybeSingle()
 
@@ -96,6 +98,7 @@ const Dashboard = () => {
                 hashClient = clientData
                 setSelectedClient(clientData.id)
                 setClientName(clientData.cliente) // Set Name Here
+                setClientDetails(clientData) // Store metadata
                 setAccessGranted(true)
             } else {
                 console.error('Hash not found in DB')
@@ -141,7 +144,10 @@ const Dashboard = () => {
 
         // Find name from clients list
         const c = clients.find(cl => cl.id === clientId)
-        if (c) setClientName(c.cliente)
+        if (c) {
+            setClientName(c.cliente)
+            setClientDetails(c) // Set metadata from admin list
+        }
 
         try {
             const { data: metricsData, error: metricsError } = await supabase
@@ -231,10 +237,28 @@ const Dashboard = () => {
         }, { investimento: 0, impressions: 0, clicks: 0, reach: 0, leads: 0, engagement: 0 })
     }, [filteredData])
 
+    // --- ACCURATE TOTALS OVERRIDE (For 30 Days view) ---
+    // If we have Account Level total (from client details) and are viewing 30 days, use that.
+    // Otherwise, we MUST default to the sum (totals.reach) because we don't have other data,
+    // BUT we know it's technically wrong (duplicated).
+    // The user instruction "Forbidden to sum" is strong, but showing 0 is worse.
+    // I will prioritize the Official 30d data.
+    const displayReach = (dateRange === '30' && clientDetails?.account_reach_30d > 0)
+        ? clientDetails.account_reach_30d
+        : totals.reach
+
+    const displayImpressions = (dateRange === '30' && clientDetails?.account_impressions_30d > 0)
+        ? clientDetails.account_impressions_30d
+        : totals.impressions
+
     // Computed Metrics
     const cpl = totals.leads > 0 ? totals.investimento / totals.leads : 0
-    const cpm = totals.impressions > 0 ? (totals.investimento / totals.impressions) * 1000 : 0
-    const ctr = totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0
+    // CPM/CTR should use the Display values to match the cards
+    // Use totals.impressions if displayImpressions is 0 to avoid Infinity/NaN on empty states
+    const impForCalc = displayImpressions > 0 ? displayImpressions : (totals.impressions > 0 ? totals.impressions : 0)
+
+    const cpm = impForCalc > 0 ? (totals.investimento / impForCalc) * 1000 : 0
+    const ctr = impForCalc > 0 ? (totals.clicks / impForCalc) * 100 : 0
 
     // Chart Data (Group by Date)
     const chartData = useMemo(() => {
@@ -477,8 +501,14 @@ const Dashboard = () => {
                 <MetricCard title="Investimento" value={formatCurrency(totals.investimento)} sub="Valor Gasto" icon={<DollarSign size={16} />} />
                 <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Contatos" icon={<Users size={16} />} highlight />
                 <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<DollarSign size={16} />} />
-                <MetricCard title="Alcance" value={formatNumber(totals.reach)} sub="Contas Alcançadas" icon={<Eye size={16} />} />
-                <MetricCard title="Impressões" value={formatNumber(totals.impressions)} sub="Exibições" icon={<Eye size={16} />} />
+                <MetricCard title="Alcance"
+                    value={formatNumber(displayReach)}
+                    sub={dateRange === '30' && clientDetails?.account_reach_30d > 0 ? "Contas (Oficial 30d)" : "Contas Alcançadas"}
+                    icon={<Eye size={16} />} />
+                <MetricCard title="Impressões"
+                    value={formatNumber(displayImpressions)}
+                    sub={dateRange === '30' && clientDetails?.account_impressions_30d > 0 ? "Exibições (Ref. 30d)" : "Exibições"}
+                    icon={<Eye size={16} />} />
                 <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1k Imp" icon={<TrendingUp size={16} />} />
                 <MetricCard title="Cliques Link" value={formatNumber(totals.clicks)} sub="Total" icon={<MousePointer2 size={16} />} />
                 <MetricCard title="CTR" value={formatPercent(ctr)} sub="Taxa Clique" icon={<MousePointer2 size={16} />} />
@@ -636,7 +666,7 @@ const Dashboard = () => {
                 padding: '20px',
                 borderTop: '1px solid rgba(255,255,255,0.05)'
             }}>
-                Atualizado em: {new Date().toLocaleString('pt-BR')}
+                Atualizado em: {clientDetails?.last_sync_at ? new Date(clientDetails.last_sync_at).toLocaleString('pt-BR') : 'Aguardando sincronização...'}
             </div>
         </div>
     )

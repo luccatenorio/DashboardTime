@@ -360,6 +360,41 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                 log_error(client_id, "sync_meta_metrics", "error", error_msg,
                          {"campaign_id": campaign_id, "campaign_name": campaign_name})
         
+        # ----------------------------------------------------------------
+        # 4. ATUALIZAÇÃO NÍVEL CONTA (Alcance/Impressões 30d REAIS)
+        # ----------------------------------------------------------------
+        try:
+            # 1. Fetch Account Insights (last_30d)
+            acc_url = f"{META_BASE_URL}/{ad_account_id}/insights"
+            acc_params = {
+                'access_token': META_ACCESS_TOKEN,
+                'level': 'account',
+                'date_preset': 'last_30d',
+                'fields': 'reach,impressions,spend'
+            }
+            resp = requests.get(acc_url, params=acc_params)
+            
+            # 2. Update Client Table
+            update_data = {'last_sync_at': datetime.now().isoformat()}
+            
+            if resp.status_code == 200:
+                d = resp.json().get('data', [])
+                if d:
+                    item = d[0]
+                    update_data['account_reach_30d'] = int(item.get('reach', 0))
+                    update_data['account_impressions_30d'] = int(item.get('impressions', 0))
+                    update_data['account_spend_30d'] = float(item.get('spend', 0))
+                    print(f"      [CONTA] Reach 30d: {item.get('reach')} | Impr: {item.get('impressions')}")
+            
+            # Try update (ignoring if cols don't exist yet - user needs to run SQL)
+            try:
+                supabase.table('clients').update(update_data).eq('id', client_id).execute()
+            except Exception as ex_db:
+                print(f"      AVISO DB: Falha ao atualizar dados da conta (Colunas existem?): {ex_db}")
+                
+        except Exception as e_acc:
+            print(f"      ERRO Account Insights: {e_acc}")
+
         # Log de sucesso
         log_error(client_id, "sync_meta_metrics", "success",
                  f"Sincronização concluída para {client_name}",
