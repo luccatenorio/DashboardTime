@@ -176,61 +176,42 @@ def process_actions(actions: List[Dict], objective: str = None, campaign_name: s
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome)
     
-    NOVA LÓGICA ESTRITA (Simplificada):
-    - LEADS/CADASTROS -> actions.lead
-    - MENSAGEM -> actions.onsite_conversion.messaging_conversation_started_7d
-    - OUTROS (Tráfego, Engajamento, Awareness) -> 0 (Zero Leads)
+    NOVA LÓGICA GERAL:
+    Independente do objetivo, procuramos as métricas reais que o cliente considera como "Lead".
+    - Conversas de mensagem
+    - Formulários de lead / site lead
+    - Compras (purchases)
     """
     if not actions:
         return (0.0, None)
     
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
     
-    # 1. OUTCOME_MESSAGES (ou MESSAGES) e ENGAJAMENTO COM MENSAGEM (Vicente)
-    # A regra é estrita: Só conta se tiver CONVERSA INICIADA.
-    # Se for Engajamento mas tiver conversa, conta como Lead Comercial (para não perder dados do Vicente).
-    if objective in ['OUTCOME_MESSAGES', 'MESSAGES', 'OUTCOME_ENGAGEMENT']:
-        # Prioridade: Conversas iniciadas (7d)
-        if 'onsite_conversion.messaging_conversation_started_7d' in action_map:
-            return (action_map['onsite_conversion.messaging_conversation_started_7d'], 'onsite_conversion.messaging_conversation_started_7d')
-        # Fallback para 1d
-        if 'onsite_conversion.messaging_conversation_started_1d' in action_map:
-             return (action_map['onsite_conversion.messaging_conversation_started_1d'], 'onsite_conversion.messaging_conversation_started_1d')
-             
-        # SE FOR OUTCOME_ENGAGEMENT e não tiver mensagem -> Cai no return (0.0, None) abaixo?
-        # Não, o loop continua ou retorna?
-        # Se for MESSAGES puro e não tiver nada, devia retornar 0.
-        # Se for ENGAGEMENT e não tiver msg, NÃO deve pegar post_engagement (pois é vanity).
+    # 1. Cadastros/Formulários (Super Prioridade)
+    if 'lead' in action_map:
+        return (action_map['lead'], 'lead')
+    if 'leads' in action_map:
+        return (action_map['leads'], 'leads')
         
-        # Então, se entrou aqui e não achou msg:
-        if objective in ['OUTCOME_MESSAGES', 'MESSAGES']:
-            return (0.0, None) # Mensagem sem conversa = 0
+    # 2. Início de Conversa (Mensagens)
+    # Procuramos variáveis consolidadas no Meta:
+    msg_keys = [
+        'onsite_conversion.messaging_conversation_started_7d',
+        'onsite_conversion.messaging_conversation_started_1d',
+        'omnichannel_messaging_conversation_started_7d',
+        'omnichannel_messaging_conversation_started',
+        'onsite_conversion.messaging_first_reply'
+    ]
+    for key in msg_keys:
+        if key in action_map:
+            return (action_map[key], key)
             
-        # Se for ENGAGEMENT e não achou msg, deixa passar para checar se é LEAD (vai que...) 
-        # ou cai no final 0.0
-
+    # 3. Compras
+    if 'purchase' in action_map:
+        return (action_map['purchase'], 'purchase')
         
-    # 2. OUTCOME_LEADS (ou LEAD_GENERATION)
-    if objective in ['OUTCOME_LEADS', 'LEAD_GENERATION', 'OUTCOME_SALES', 'CONVERSIONS', 'PRODUCT_CATALOG_SALES']:
-        # Adicionei SALES/CONVERSIONS aqui pois são resultados comerciais também (Compras são "Leads" comerciais no contexto geral)
-        
-        # Prioridade 1: Leads (Cadastros)
-        if 'lead' in action_map:
-            return (action_map['lead'], 'lead')
-        if 'leads' in action_map:
-            return (action_map['leads'], 'leads')
-            
-        # Prioridade 2: Compras/Checkout (para Sales)
-        if 'purchase' in action_map:
-            return (action_map['purchase'], 'purchase')
-            
-        # Prioridade 3: Mensagens (se for campanha de Lead para Msg)
-        if 'onsite_conversion.messaging_conversation_started_7d' in action_map:
-             return (action_map['onsite_conversion.messaging_conversation_started_7d'], 'onsite_conversion.messaging_conversation_started_7d')
-
-    # 3. QUALQUER OUTRO CASO (Traffic, Engagement, Awareness)
-    # Retorna ZERO para não poluir o CPL.
-    # O cliente quer ver o gasto, mas resultado 0.
+    # Para qualquer outra métrica de engajamento, tráfego e conscientização, 
+    # retornamos 0 para não poluir o painel "Leads" com cliques de link vazios.
     return (0.0, None)
 
 
@@ -323,36 +304,48 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                     except Exception as e:
                         print(f"      ⚠️  Erro ao buscar existentes: {str(e)}")
 
-                # Atualizar metric_data com IDs existentes
+                # Separa atualizações e inserções para garantir consistência de chaves no batch
+                updates = []
+                inserts = []
+                
                 for metric in metrics_to_insert:
                     if metric['data_referencia'] in existing_map:
                         metric['id'] = existing_map[metric['data_referencia']]
+                        updates.append(metric)
+                    else:
+                        inserts.append(metric)
 
-                # Inserir/atualizar no Supabase em batch
-                if metrics_to_insert:
+                # Função auxiliar para batch upsert
+                def batch_upsert(items, label="items"):
+                    if not items: return 0
+                    count = 0
                     batch_size = 50
-                    inserted_count = 0
-                    
-                    for i in range(0, len(metrics_to_insert), batch_size):
-                        batch = metrics_to_insert[i:i + batch_size]
+                    for i in range(0, len(items), batch_size):
+                        batch = items[i:i + batch_size]
                         try:
                             # Upsert deve funcionar agora que temos IDs para os existentes
                             result = supabase.table("dashboard_campaign_metrics").upsert(
                                 batch
                             ).execute()
-                            inserted_count += len(batch)
+                            count += len(batch)
                         except Exception as e:
                             # Se batch falhar, tentar individualmente
-                            print(f"      ⚠️  Erro no batch, tentando individualmente: {str(e)}")
+                            print(f"      ⚠️  Erro no batch ({label}), tentando individualmente: {str(e)}")
                             for metric in batch:
                                 try:
                                     supabase.table("dashboard_campaign_metrics").upsert(metric).execute()
-                                    inserted_count += 1
+                                    count += 1
                                 except Exception as e2:
                                     print(f"      ERRO: Erro ao inserir metrica para {metric['data_referencia']}: {str(e2)}")
-                    
-                    total_insights += inserted_count
-                    print(f"      OK: {inserted_count} metrica(s) inserida(s)/atualizada(s)")
+                    return count
+
+                # Executar batches
+                updated_count = batch_upsert(updates, "updates")
+                inserted_count = batch_upsert(inserts, "inserts")
+                
+                total_ops = updated_count + inserted_count
+                total_insights += total_ops
+                print(f"      OK: {total_ops} metrica(s) processada(s) ({updated_count} updates, {inserted_count} inserts)")
                 
             except Exception as e:
                 error_msg = f"Erro ao processar campanha {campaign_name}: {str(e)}"

@@ -171,9 +171,12 @@ const Dashboard = () => {
     // Metric Classification
     const COMMERCIAL_METRICS = [
         'lead', 'leads',
-        'onsite_conversion.messaging_conversation_started_7d',
-        'onsite_conversion.messaging_conversation_started_1d',
-        'offsite_conversion.fb_pixel_lead',
+        'messaging_conversation_started_7d',
+        'messaging_conversation_started_1d',
+        'omnichannel_messaging_conversation_started',
+        'messaging_first_reply',
+        'messaging_conversation_started',
+        'fb_pixel_lead',
         'purchase',
         'initiate_checkout',
         'add_to_cart',
@@ -209,13 +212,28 @@ const Dashboard = () => {
 
         // Date Range Filter
         const today = new Date()
+
+        // Determina a data final
+        let includeToday = dateRange.includes('_today')
+        let daysToSubtract = parseInt(dateRange.replace('_today', ''))
+
+        // Data de corte inicial (ex: há 30 dias)
         const cutoffDate = new Date()
-        cutoffDate.setDate(today.getDate() - parseInt(dateRange))
+        cutoffDate.setDate(today.getDate() - daysToSubtract)
         const cutoffStr = cutoffDate.getFullYear() + '-' +
             String(cutoffDate.getMonth() + 1).padStart(2, '0') + '-' +
             String(cutoffDate.getDate()).padStart(2, '0')
 
-        return data.filter(m => m.data_referencia && m.data_referencia >= cutoffStr)
+        // Data de corte final (ontem ou hoje)
+        const endDate = new Date()
+        if (!includeToday) {
+            endDate.setDate(today.getDate() - 1) // Meta Ads Default: Últimos X dias ENCERRA ontem
+        }
+        const endStr = endDate.getFullYear() + '-' +
+            String(endDate.getMonth() + 1).padStart(2, '0') + '-' +
+            String(endDate.getDate()).padStart(2, '0')
+
+        return data.filter(m => m.data_referencia && m.data_referencia >= cutoffStr && m.data_referencia <= endStr)
     }, [metrics, selectedClient, dateRange])
 
     // Aggregate for Scorecards
@@ -295,20 +313,21 @@ const Dashboard = () => {
     // Campaign Breakdown Data
     const campaignData = useMemo(() => {
         const grouped = filteredData.reduce((acc, curr) => {
+            const id = curr.campaign_id || curr.campaign_name
             const name = curr.campaign_name || 'Desconhecida'
-            if (!acc[name]) {
-                acc[name] = { name, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
+            if (!acc[id]) {
+                acc[id] = { id, name, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
             }
 
             const val = Number(curr.resultado_valor) || 0
             const resName = curr.resultado_nome
             const isComm = isCommercial(resName)
 
-            acc[name].investimento += (Number(curr.investimento) || 0)
-            acc[name].leads += (isComm ? val : 0)
-            acc[name].engagement += (!isComm ? val : 0)
-            acc[name].clicks += (Number(curr.cliques_link) || 0)
-            acc[name].impressions += (Number(curr.impressoes) || 0)
+            acc[id].investimento += (Number(curr.investimento) || 0)
+            acc[id].leads += (isComm ? val : 0)
+            acc[id].engagement += (!isComm ? val : 0)
+            acc[id].clicks += (Number(curr.cliques_link) || 0)
+            acc[id].impressions += (Number(curr.impressoes) || 0)
             return acc
         }, {})
 
@@ -346,30 +365,22 @@ const Dashboard = () => {
 
     // Header Component
     const Header = () => (
-        <header className="header" style={{
-            background: 'rgba(20, 20, 25, 0.95)',
-            backdropFilter: 'blur(10px)',
-            borderBottom: '1px solid rgba(255,255,255,0.1)',
-            padding: '16px 32px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-        }}>
+        <header className="header glass-panel">
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                <img src="/tc-logo.png" alt="Time Controll" style={{ height: '48px', borderRadius: '8px' }} />
+                <img src="/tc-logo.png" alt="Time Controll" style={{ height: '48px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }} />
                 <div>
-                    <h1 style={{ fontSize: '20px', fontWeight: '600', color: '#fff', margin: 0 }}>
+                    <h1 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>
                         Dashboard de Resultados
                     </h1>
-                    <span style={{ fontSize: '14px', color: '#FFA500', fontWeight: '500' }}>Time Controll Agency</span>
+                    <span className="text-gradient" style={{ fontSize: '14px', fontWeight: '600' }}>Time Controll Agency</span>
                 </div>
             </div>
 
             {/* Client Name Display */}
             {selectedClient && (
                 <div style={{ textAlign: 'right' }}>
-                    <span style={{ display: 'block', fontSize: '12px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>Cliente</span>
-                    <span style={{ fontSize: '18px', fontWeight: '600', color: '#fff' }}>
+                    <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '2px' }}>Cliente Select</span>
+                    <span style={{ fontSize: '18px', fontWeight: '700', letterSpacing: '-0.02em' }}>
                         {clientName || 'Carregando...'}
                     </span>
                 </div>
@@ -378,15 +389,8 @@ const Dashboard = () => {
             {isAdmin && selectedClient && (
                 <button
                     onClick={() => { setSelectedClient(null); setMetrics([]); setClientName('') }}
-                    style={{
-                        marginLeft: '20px',
-                        background: 'transparent',
-                        border: '1px solid rgba(255,255,255,0.2)',
-                        color: '#fff',
-                        padding: '8px 16px',
-                        borderRadius: '6px',
-                        cursor: 'pointer'
-                    }}
+                    className="btn-ghost"
+                    style={{ marginLeft: '20px' }}
                 >
                     &larr; Voltar para Clientes
                 </button>
@@ -406,7 +410,16 @@ const Dashboard = () => {
                 <img src="/tc-logo.png" alt="TC" style={{ height: '80px', marginBottom: '24px', opacity: 0.8 }} />
                 <h1 style={{ fontSize: '24px', fontWeight: '600' }}>Acesso Restrito</h1>
                 <p style={{ color: '#666', marginTop: '8px' }}>Utilize um link exclusivo para acessar o relatório.</p>
-                {errorObj && <p style={{ color: '#ff4444', marginTop: 16 }}>{errorObj.message}</p>}
+                <div style={{ marginTop: '20px', padding: '15px', background: '#1a1a1a', borderRadius: '8px', border: '1px solid #333', maxWidth: '400px', width: '100%', wordBreak: 'break-all' }}>
+                    <p style={{ color: '#888', fontSize: '12px', margin: '0 0 5px 0' }}>URL Hash detectado:</p>
+                    <code style={{ color: '#FFA500', fontSize: '14px' }}>{window.location.hash || '<Vazio>'}</code>
+
+                    {errorObj && (
+                        <div style={{ marginTop: '15px', borderTop: '1px solid #333', paddingTop: '10px' }}>
+                            <p style={{ color: '#ff4444', fontSize: '13px', margin: 0 }}>Erro: {errorObj?.message || 'Desconhecido'}</p>
+                        </div>
+                    )}
+                </div>
             </div>
         )
     }
@@ -423,10 +436,10 @@ const Dashboard = () => {
     // --- ADMIN: CLIENT SELECTION GRID ---
     if (isAdmin && !selectedClient) {
         return (
-            <div className="dashboard-container" style={{ background: '#0a0a0a', minHeight: '100vh' }}>
+            <div className="dashboard-container animate-fade-in">
                 <Header />
-                <div style={{ padding: '40px', maxWidth: '1200px', margin: '0 auto' }}>
-                    <h2 style={{ color: '#fff', marginBottom: '32px', fontSize: '24px' }}>Selecione um Cliente</h2>
+                <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
+                    <h2 style={{ color: 'var(--text-primary)', marginBottom: '32px', fontSize: '1.5rem', fontWeight: '600' }}>Selecione um Cliente</h2>
                     <div style={{
                         display: 'grid',
                         gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
@@ -436,34 +449,12 @@ const Dashboard = () => {
                             <div
                                 key={client.id}
                                 onClick={() => handleAdminSelectClient(client.id)}
-                                style={{
-                                    background: '#141419',
-                                    border: '1px solid rgba(255,255,255,0.05)',
-                                    borderRadius: '12px',
-                                    padding: '24px',
-                                    cursor: 'pointer',
-                                    transition: 'transform 0.2s, border-color 0.2s',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '16px'
-                                }}
-                                onMouseEnter={e => {
-                                    e.currentTarget.style.borderColor = '#FFA500'
-                                    e.currentTarget.style.transform = 'translateY(-2px)'
-                                }}
-                                onMouseLeave={e => {
-                                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.05)'
-                                    e.currentTarget.style.transform = 'translateY(0)'
-                                }}
+                                className="admin-client-card"
                             >
-                                <div style={{
-                                    width: '40px', height: '40px', borderRadius: '50%', background: '#252530',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: '#FFA500', fontWeight: 'bold'
-                                }}>
+                                <div className="admin-client-avatar">
                                     {client.cliente.substr(0, 2).toUpperCase()}
                                 </div>
-                                <span style={{ color: '#e0e0e0', fontWeight: '500' }}>{client.cliente}</span>
+                                <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem' }}>{client.cliente}</span>
                             </div>
                         ))}
                     </div>
@@ -475,31 +466,25 @@ const Dashboard = () => {
     // --- MAIN DASHBOARD (For Single Client or Admin viewing Single Client) ---
 
     return (
-        <div className="dashboard-container">
+        <div className="dashboard-container animate-fade-in">
             <Header />
 
-            <div className="filters-bar" style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', padding: '0 32px' }}>
+            <div className="filters-bar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
                 <select
                     value={dateRange}
                     onChange={(e) => setDateRange(e.target.value)}
                     className="date-select"
-                    style={{
-                        background: '#1A1A1A',
-                        border: '1px solid rgba(255,255,255,0.1)',
-                        color: '#fff',
-                        padding: '8px 16px',
-                        borderRadius: '6px',
-                        cursor: 'pointer'
-                    }}
                 >
-                    <option value="7">Últimos 7 dias</option>
-                    <option value="30">Últimos 30 dias</option>
+                    <option value="7">Últimos 7 dias (Padrão Meta)</option>
+                    <option value="30">Últimos 30 dias (Padrão Meta)</option>
+                    <option value="7_today">Últimos 7 dias (+Hoje)</option>
+                    <option value="30_today">Últimos 30 dias (+Hoje)</option>
                 </select>
             </div>
             {/* Metrics Grid */}
             <div className="metrics-grid">
                 <MetricCard title="Investimento" value={formatCurrency(totals.investimento)} sub="Valor Gasto" icon={<DollarSign size={16} />} />
-                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Contatos" icon={<Users size={16} />} highlight />
+                <MetricCard title="Leads" value={formatNumber(totals.leads)} sub="Contatos gerados" icon={<Users size={16} />} highlight />
                 <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<DollarSign size={16} />} />
                 <MetricCard title="Alcance"
                     value={formatNumber(displayReach)}
@@ -507,44 +492,49 @@ const Dashboard = () => {
                     icon={<Eye size={16} />} />
                 <MetricCard title="Impressões"
                     value={formatNumber(displayImpressions)}
-                    sub={dateRange === '30' && clientDetails?.account_impressions_30d > 0 ? "Exibições (Ref. 30d)" : "Exibições"}
+                    sub={dateRange === '30' && clientDetails?.account_impressions_30d > 0 ? "Exibições (Ref. 30d)" : "Exibições num total"}
                     icon={<Eye size={16} />} />
-                <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1k Imp" icon={<TrendingUp size={16} />} />
-                <MetricCard title="Cliques Link" value={formatNumber(totals.clicks)} sub="Total" icon={<MousePointer2 size={16} />} />
-                <MetricCard title="CTR" value={formatPercent(ctr)} sub="Taxa Clique" icon={<MousePointer2 size={16} />} />
+                <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1.000 Imp" icon={<TrendingUp size={16} />} />
+                <MetricCard title="Cliques Link" value={formatNumber(totals.clicks)} sub="Total de cliques" icon={<MousePointer2 size={16} />} />
+                <MetricCard title="CTR" value={formatPercent(ctr)} sub="Taxa Clique/Visita" icon={<Activity size={16} />} />
             </div>
 
             {/* Main Chart */}
-            <div className="chart-section">
+            <div className="chart-section glass-panel">
                 <div className="section-title">
-                    <span>Tendência de Performance</span>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        <span style={{ color: '#3b82f6' }}>● Investimento</span> <span style={{ color: '#f97316', marginLeft: '10px' }}>● Leads</span>
-                    </div>
+                    Tendência de Performance
+                    <span className="indicator">
+                        <span className="investimento" style={{ color: '#3b82f6' }}>Investimento</span>
+                        <span className="leads" style={{ color: '#f97316' }}>Leads</span>
+                    </span>
                 </div>
                 <div style={{ width: '100%', height: 350 }}>
-                    <ResponsiveContainer>
-                        <ComposedChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                    <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                             <XAxis
                                 dataKey="dateFormatted"
                                 stroke="#71717a"
-                                tick={{ fontSize: isMobile ? 10 : 12 }}
+                                tick={{ fontSize: isMobile ? 10 : 12, fill: '#71717a' }}
+                                tickLine={false}
+                                axisLine={false}
                                 interval={isMobile ? (dateRange === '30' ? 4 : 1) : 0}
+                                dy={10}
                             />
-                            <YAxis yAxisId="left" stroke="#71717a" tick={{ fontSize: 10 }} tickFormatter={(val) => `R$${val}`} />
-                            <YAxis yAxisId="right" orientation="right" stroke="#71717a" tick={{ fontSize: 10 }} />
+                            <YAxis yAxisId="left" stroke="#71717a" tick={{ fontSize: 10, fill: '#71717a' }} tickFormatter={(val) => `R$${val}`} tickLine={false} axisLine={false} />
+                            <YAxis yAxisId="right" orientation="right" stroke="#71717a" tick={{ fontSize: 10, fill: '#71717a' }} tickLine={false} axisLine={false} />
                             <Tooltip
-                                contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', color: '#fff' }}
+                                contentStyle={{ backgroundColor: 'rgba(20,20,25,0.9)', backdropFilter: 'blur(10px)', borderColor: 'rgba(255,255,255,0.1)', color: '#fff', borderRadius: '8px' }}
                                 itemStyle={{ color: '#fff' }}
+                                cursor={{ fill: 'rgba(255,255,255,0.02)' }}
                             />
                             <Bar
                                 yAxisId="left"
                                 dataKey="investimento"
-                                fill="#3b82f6"
+                                fill="url(#colorInvestimento)"
                                 name="Investimento"
                                 barSize={isMobile ? (dateRange === '30' ? 8 : 15) : 20}
-                                radius={[2, 2, 0, 0]}
+                                radius={[4, 4, 0, 0]}
                             />
                             <Line
                                 yAxisId="right"
@@ -552,9 +542,16 @@ const Dashboard = () => {
                                 dataKey="leads"
                                 stroke="#f97316"
                                 strokeWidth={isMobile ? 2 : 3}
-                                dot={isMobile ? { r: 1, fill: '#f97316' } : { r: 4, fill: '#f97316' }}
+                                dot={isMobile ? { r: 1, fill: '#f97316', strokeWidth: 0 } : { r: 4, fill: '#f97316', strokeWidth: 0 }}
+                                activeDot={{ r: 6, fill: '#f97316', strokeWidth: 0 }}
                                 name="Leads"
                             />
+                            <defs>
+                                <linearGradient id="colorInvestimento" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.8} />
+                                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.2} />
+                                </linearGradient>
+                            </defs>
                         </ComposedChart>
                     </ResponsiveContainer>
                 </div>
@@ -562,16 +559,16 @@ const Dashboard = () => {
 
             {/* Campaign Breakdown */}
             {campaignData && campaignData.length > 0 && (
-                <div className="bottom-card" style={{ marginBottom: 20 }}>
-                    <div className="section-title">Resultados por Campanha</div>
-                    <div style={{ overflowX: 'auto', maxHeight: '400px', overflowY: 'auto' }}>
+                <div className="glass-panel" style={{ marginBottom: 32, padding: 28 }}>
+                    <div className="section-title">Resultados por Campanha <Activity size={18} color="var(--text-secondary)" /></div>
+                    <div className="table-container">
                         <table>
                             <thead>
                                 <tr>
                                     <th>Campanha</th>
                                     <th>Investimento</th>
-                                    <th>Resultados (Leads)</th>
-                                    <th>CPL / CPA</th>
+                                    <th>Resultados</th>
+                                    <th>Custo por Result.</th>
                                     <th>CTR</th>
                                 </tr>
                             </thead>
@@ -580,7 +577,15 @@ const Dashboard = () => {
                                     <tr key={i}>
                                         <td style={{ maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
                                         <td>{formatCurrency(c.investimento)}</td>
-                                        <td>{c.leads}</td>
+                                        <td>
+                                            <span style={{
+                                                background: c.leads > 0 ? 'rgba(249, 115, 22, 0.1)' : 'transparent',
+                                                color: c.leads > 0 ? '#f97316' : 'var(--text-primary)',
+                                                padding: '4px 8px',
+                                                borderRadius: '4px',
+                                                fontWeight: c.leads > 0 ? '600' : '500'
+                                            }}>{c.leads}</span>
+                                        </td>
                                         <td>{formatCurrency(c.cpl)}</td>
                                         <td>{formatPercent(c.ctr)}</td>
                                     </tr>
@@ -593,41 +598,47 @@ const Dashboard = () => {
 
             {/* Bottom Section */}
             <div className="bottom-grid">
-                <div className="bottom-card">
+                <div className="bottom-card glass-panel">
                     <div className="section-title">Performance Hoje</div>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                        <div className="today-stat" style={{ marginBottom: '20px' }}>
-                            <h3 style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>DATA</h3>
-                            <p style={{ fontSize: '1.2rem', color: 'var(--text-primary)', fontWeight: 'bold' }}>Hoje</p>
+                    <div>
+                        <div className="today-stat-box text-center" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <h3 style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '1px' }}>DATA REFERÊNCIA</h3>
+                                <p style={{ fontSize: '1.1rem', color: 'var(--text-primary)', fontWeight: '600', margin: 0 }}>Hoje</p>
+                            </div>
+                            <Activity size={24} color="var(--accent-color)" opacity={0.8} />
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
-                            <div>
-                                <div style={{ fontSize: '0.75rem' }}>Investido</div>
-                                <div style={{ fontSize: '1.5rem', color: 'var(--accent-color)', fontWeight: 'bold' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                            <div className="today-stat-box" style={{ margin: 0 }}>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>Investido</div>
+                                <div style={{ fontSize: '1.4rem', color: '#3b82f6', fontWeight: '700' }}>
                                     {formatCurrency(todayStats.investimento)}
                                 </div>
                             </div>
-                            <div>
-                                <div style={{ fontSize: '0.75rem' }}>Leads</div>
-                                <div style={{ fontSize: '1.5rem', color: 'var(--text-primary)', fontWeight: 'bold' }}>
+                            <div className="today-stat-box" style={{ margin: 0 }}>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>Leads</div>
+                                <div style={{ fontSize: '1.4rem', color: '#f97316', fontWeight: '700' }}>
                                     {todayStats.leads}
                                 </div>
                             </div>
                         </div>
 
-                        <div>
-                            <div style={{ fontSize: '0.75rem' }}>CPL Hoje</div>
-                            <div style={{ fontSize: '1.2rem', color: 'var(--text-primary)', fontWeight: 'bold' }}>
+                        <div className="today-stat-box">
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>CPL Hoje</span>
+                                <TrendingUp size={14} color="var(--text-secondary)" />
+                            </div>
+                            <div style={{ fontSize: '1.25rem', color: 'var(--text-primary)', fontWeight: '700' }}>
                                 {formatCurrency(todayStats.cpl)}
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <div className="bottom-card">
-                    <div className="section-title">Detalhamento Diário</div>
-                    <div style={{ overflowX: 'auto', maxHeight: '400px', overflowY: 'auto' }}>
+                <div className="bottom-card glass-panel">
+                    <div className="section-title">Detalhamento Diário <Filter size={18} color="var(--text-secondary)" /></div>
+                    <div className="table-container">
                         <table>
                             <thead>
                                 <tr>
@@ -643,9 +654,9 @@ const Dashboard = () => {
                             <tbody>
                                 {tableData.map((row, i) => (
                                     <tr key={i}>
-                                        <td>{row.dateFormatted}</td>
+                                        <td style={{ color: 'var(--text-secondary)' }}>{row.dateFormatted}</td>
                                         <td>{formatCurrency(row.investimento)}</td>
-                                        <td>{row.leads}</td>
+                                        <td style={{ color: row.leads > 0 ? '#f97316' : 'inherit', fontWeight: row.leads > 0 ? '600' : '500' }}>{row.leads}</td>
                                         <td>{formatCurrency(row.cpl)}</td>
                                         <td>{row.clicks}</td>
                                         <td>{formatPercent(row.ctr)}</td>
@@ -659,26 +670,26 @@ const Dashboard = () => {
             </div>
 
             <div style={{
-                marginTop: '30px',
+                marginTop: '40px',
                 textAlign: 'center',
-                color: '#666',
-                fontSize: '0.8rem',
-                padding: '20px',
-                borderTop: '1px solid rgba(255,255,255,0.05)'
+                color: 'var(--text-secondary)',
+                fontSize: '0.75rem',
+                padding: '24px',
+                letterSpacing: '0.5px'
             }}>
-                Atualizado em: {clientDetails?.last_sync_at ? new Date(clientDetails.last_sync_at).toLocaleString('pt-BR') : 'Aguardando sincronização...'}
+                ÚLTIMA SINCRONIZAÇÃO: {clientDetails?.last_sync_at ? new Date(clientDetails.last_sync_at).toLocaleString('pt-BR') : 'Aguardando sincronização...'}
             </div>
         </div>
     )
 }
 
 const MetricCard = ({ title, value, sub, icon, highlight }) => (
-    <div className="metric-card" style={highlight ? { borderColor: 'var(--accent-color)' } : {}}>
+    <div className={`metric-card glass-panel ${highlight ? 'highlight' : ''}`}>
         <div className="metric-header">
             {title}
             {icon}
         </div>
-        <div className="metric-value" style={highlight ? { color: 'var(--accent-color)' } : {}}>{value}</div>
+        <div className="metric-value">{value}</div>
         <div className="metric-sub">{sub}</div>
     </div>
 )
