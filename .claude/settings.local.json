@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(npm run:*)",
+      "Bash(python execution/sync_meta_metrics.py --client Matheus)"
+    ]
+  }
+}

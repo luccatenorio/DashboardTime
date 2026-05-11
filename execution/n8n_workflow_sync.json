@@ -1,0 +1,219 @@
+{
+  "name": "SYNC META ADS → DASHBOARD",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "trigger-diario",
+      "name": "Todo dia 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-900, 0]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "clients",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "ativo",
+              "condition": "eq",
+              "keyValue": true
+            }
+          ]
+        }
+      },
+      "id": "buscar-clientes",
+      "name": "Buscar Clientes Ativos",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-660, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supa-cred",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "loop-clientes",
+      "name": "Loop Clientes",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-420, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ================================================================\n// BUSCA CAMPANHAS + INSIGHTS POR CAMPANHA\n// Usa this.helpers.httpRequest — compatível com n8n self-hosted\n// ================================================================\n\nconst META_TOKEN = 'EAAU7CTYOnEwBRcirsZAzAFjAbBJ0ifBZA91HdZB9Nea3NBMMgfkV2xKy9IJZAElrCIZA7PBIwj94MFeJwL4FWR2ryuVkAIkz1PXHBUwZA1CbL2cn2iMkUZCKzc1bGLTbwrxHNIkbF1sKYIyA37sSxN7nI3Byq6LRmMeeR1tVJahLaexM9Fvnzt0F5kTjkuU';\nconst BASE = 'https://graph.facebook.com/v21.0';\n\nconst clientId   = $json.id;\nconst clientName = $json.cliente || 'Sem nome';\nlet   conta      = $json.conta_anuncio || '';\n\nif (!conta) return [{ json: { status: 'sem_conta', cliente: clientName, metricas: [] } }];\nif (!conta.startsWith('act_')) conta = 'act_' + conta.replace('act_', '');\n\n// Helper GET com this.helpers.httpRequest (correto no n8n self-hosted)\nasync function apiGet(url, qs = {}) {\n  return await this.helpers.httpRequest({\n    method: 'GET',\n    url,\n    qs,\n    returnFullResponse: false,\n    ignoreHttpStatusErrors: false\n  });\n}\n\n// Para URLs de paginação (já contém todos os query params)\nasync function apiGetUrl(fullUrl) {\n  const u = new URL(fullUrl);\n  const qs = {};\n  u.searchParams.forEach((v, k) => { qs[k] = v; });\n  return await apiGet(u.origin + u.pathname, qs);\n}\n\nfunction processActions(actions) {\n  if (!actions || !actions.length) return { valor: 0, nome: null };\n  const m = {};\n  for (const a of actions) m[a.action_type] = parseFloat(a.value || 0);\n\n  for (const k of ['lead','leads','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','submit_application'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  for (const k of ['onsite_conversion.messaging_conversation_started_7d','onsite_conversion.messaging_conversation_started_1d','omnichannel_messaging_conversation_started_7d','omnichannel_messaging_conversation_started','onsite_conversion.messaging_first_reply'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  for (const k of ['contact','schedule'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  if (m['purchase'] > 0) return { valor: m['purchase'], nome: 'purchase' };\n  return { valor: 0, nome: null };\n}\n\n// 1. Buscar campanhas da conta\nconst campData = await apiGet(`${BASE}/${conta}/campaigns`, {\n  access_token: META_TOKEN,\n  fields: 'id,name,status,objective',\n  limit: '100'\n});\n\nconst campaigns = campData.data || [];\nif (!campaigns.length) {\n  return [{ json: { status: 'sem_campanhas', cliente: clientName, metricas: [] } }];\n}\n\n// 2. Para cada campanha, buscar insights individualmente\nconst metricas = [];\n\nfor (const camp of campaigns) {\n  let insData;\n  try {\n    insData = await apiGet(`${BASE}/${camp.id}/insights`, {\n      access_token: META_TOKEN,\n      fields: 'date_start,spend,impressions,reach,clicks,actions',\n      time_increment: '1',\n      date_preset: 'last_30d',\n      limit: '100'\n    });\n  } catch(e) { continue; }\n\n  const rows = insData.data || [];\n\n  // Paginação\n  let nextUrl = insData.paging?.next;\n  while (nextUrl) {\n    try {\n      const page = await apiGetUrl(nextUrl);\n      rows.push(...(page.data || []));\n      nextUrl = page.paging?.next;\n    } catch(e) { break; }\n  }\n\n  for (const row of rows) {\n    if (!row.date_start) continue;\n    const res = processActions(row.actions || []);\n    metricas.push({\n      client_id:       clientId,\n      campaign_id:     camp.id,\n      campaign_name:   camp.name || 'Sem nome',\n      data_referencia: row.date_start,\n      investimento:    parseFloat(row.spend        || 0),\n      impressoes:      parseInt(row.impressions    || 0),\n      cliques_link:    parseInt(row.clicks         || 0),\n      alcance:         parseInt(row.reach          || 0),\n      resultado_valor: res.valor,\n      resultado_nome:  res.nome\n    });\n  }\n}\n\nreturn [{ json: { status: 'ok', cliente: clientName, cliente_id: clientId, conta_anuncio: conta, total_metricas: metricas.length, metricas } }];"
+      },
+      "id": "buscar-e-processar",
+      "name": "Buscar Campanhas + Insights",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "has-data",
+              "leftValue": "={{ $json.metricas.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "tem-metricas",
+      "name": "Tem Métricas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [100, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://werkiwmegzqdsgfhcglb.supabase.co/rest/v1/dashboard_campaign_metrics",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",         "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
+            { "name": "Authorization",  "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
+            { "name": "Content-Type",   "value": "application/json" },
+            { "name": "Prefer",         "value": "resolution=merge-duplicates,return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.metricas) }}",
+        "options": {}
+      },
+      "id": "upsert-metricas",
+      "name": "Upsert Métricas Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [360, -80],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://werkiwmegzqdsgfhcglb.supabase.co/rest/v1/clients?id=eq.{{ $node[\"Buscar Campanhas + Insights\"].json.cliente_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
+            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"last_sync_at\": \"{{ new Date().toISOString() }}\" }",
+        "options": {}
+      },
+      "id": "update-cliente",
+      "name": "Update last_sync_at",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, -80],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "pausa-2s",
+      "name": "Pausa 2s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [860, 0],
+      "webhookId": "sync-pause-id-v2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cliente sem métricas — apenas loga e continua\nconst c = $json.cliente || 'N/A';\nconst s = $json.status || 'sem_dados';\nreturn [{ json: { status: s, cliente: c } }];"
+      },
+      "id": "sem-metricas-skip",
+      "name": "Sem Métricas (Skip)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 120]
+    }
+  ],
+  "connections": {
+    "Todo dia 6h": {
+      "main": [
+        [{ "node": "Buscar Clientes Ativos", "type": "main", "index": 0 }]
+      ]
+    },
+    "Buscar Clientes Ativos": {
+      "main": [
+        [{ "node": "Loop Clientes", "type": "main", "index": 0 }]
+      ]
+    },
+    "Loop Clientes": {
+      "main": [
+        [],
+        [{ "node": "Buscar Campanhas + Insights", "type": "main", "index": 0 }]
+      ]
+    },
+    "Buscar Campanhas + Insights": {
+      "main": [
+        [{ "node": "Tem Métricas?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Tem Métricas?": {
+      "main": [
+        [{ "node": "Upsert Métricas Supabase", "type": "main", "index": 0 }],
+        [{ "node": "Sem Métricas (Skip)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Métricas Supabase": {
+      "main": [
+        [{ "node": "Update last_sync_at", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update last_sync_at": {
+      "main": [
+        [{ "node": "Pausa 2s", "type": "main", "index": 0 }]
+      ]
+    },
+    "Pausa 2s": {
+      "main": [
+        [{ "node": "Loop Clientes", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sem Métricas (Skip)": {
+      "main": [
+        [{ "node": "Pausa 2s", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "pinData": {}
+}

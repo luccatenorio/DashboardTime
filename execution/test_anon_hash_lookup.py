@@ -2,7 +2,7 @@ import os
 from supabase import create_client
 
 # Frontend Anon Key (from user request/supabase.js)
-SUPABASE_URL = 'https://lsxrqbzitmbyycfxtpyu.supabase.co'
+SUPABASE_URL = 'https://werkiwmegzqdsgfhcglb.supabase.co'
 SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxzeHJxYnppdG1ieXljZnh0cHl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc2NjQyMDcsImV4cCI6MjA4MzI0MDIwN30.woOsJBXNAu9ssvXRN4eabgX2sC8sTq9wphiSeDOtDxs'
 
 supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)

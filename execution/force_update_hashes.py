@@ -3,8 +3,8 @@ import secrets
 from supabase import create_client
 
 # HARDCODED Service Role Key to BYPASS RLS and GUARANTEE WRITE
-SUPABASE_URL = 'https://lsxrqbzitmbyycfxtpyu.supabase.co'
-SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxzeHJxYnppdG1ieXljZnh0cHl1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzY2NDIwNywiZXhwIjoyMDgzMjQwMjA3fQ.o7Tcs0jJ-cj6Qwyo1fA4BQ0tJpEfiOnzcAt77YKsVTE'
+SUPABASE_URL = 'https://werkiwmegzqdsgfhcglb.supabase.co'
+SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E'
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 

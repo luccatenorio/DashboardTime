@@ -13,13 +13,7 @@ import requests
 from supabase import create_client, Client
 
 # Configurar encoding para Windows
-if sys.platform == 'win32':
-    try:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-    except:
-        pass
+
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -176,11 +170,14 @@ def process_actions(actions: List[Dict], objective: str = None, campaign_name: s
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome)
     
-    NOVA LÓGICA GERAL:
-    Independente do objetivo, procuramos as métricas reais que o cliente considera como "Lead".
-    - Conversas de mensagem
-    - Formulários de lead / site lead
-    - Compras (purchases)
+    Prioridade de métricas (ordem de importância):
+    1. Leads de formulário (lead, leads, lead_grouped, fb_pixel_lead)
+    2. Conversas de mensagem (messaging_conversation_started)
+    3. Contatos e agendamentos
+    4. Compras
+    
+    Retorna APENAS o valor da métrica mais relevante encontrada,
+    NÃO concatena múltiplos action types.
     """
     if not actions:
         return (0.0, None)
@@ -188,30 +185,41 @@ def process_actions(actions: List[Dict], objective: str = None, campaign_name: s
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
     
     # 1. Cadastros/Formulários (Super Prioridade)
-    if 'lead' in action_map:
-        return (action_map['lead'], 'lead')
-    if 'leads' in action_map:
-        return (action_map['leads'], 'leads')
+    lead_keys = [
+        'lead',
+        'leads', 
+        'onsite_conversion.lead_grouped',
+        'offsite_conversion.fb_pixel_lead',
+        'submit_application',
+    ]
+    for key in lead_keys:
+        if key in action_map and action_map[key] > 0:
+            return (action_map[key], key)
         
     # 2. Início de Conversa (Mensagens)
-    # Procuramos variáveis consolidadas no Meta:
     msg_keys = [
         'onsite_conversion.messaging_conversation_started_7d',
         'onsite_conversion.messaging_conversation_started_1d',
         'omnichannel_messaging_conversation_started_7d',
         'omnichannel_messaging_conversation_started',
-        'onsite_conversion.messaging_first_reply'
+        'onsite_conversion.messaging_first_reply',
     ]
     for key in msg_keys:
-        if key in action_map:
+        if key in action_map and action_map[key] > 0:
+            return (action_map[key], key)
+    
+    # 3. Contatos e Agendamentos
+    contact_keys = ['contact', 'schedule']
+    for key in contact_keys:
+        if key in action_map and action_map[key] > 0:
             return (action_map[key], key)
             
-    # 3. Compras
-    if 'purchase' in action_map:
+    # 4. Compras
+    if 'purchase' in action_map and action_map['purchase'] > 0:
         return (action_map['purchase'], 'purchase')
         
-    # Para qualquer outra métrica de engajamento, tráfego e conscientização, 
-    # retornamos 0 para não poluir o painel "Leads" com cliques de link vazios.
+    # Nenhuma métrica comercial encontrada - retorna 0
+    # (não poluir o painel "Leads" com cliques, engajamentos, etc.)
     return (0.0, None)
 
 

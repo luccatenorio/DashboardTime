@@ -345,17 +345,27 @@ const Dashboard = () => {
         return [...chartData].reverse()
     }, [chartData])
 
-    // Today's Data
+    // Today's Data — reads raw metrics directly (not filtered chartData which may exclude today)
     const todayStats = useMemo(() => {
         const today = new Date()
         const todayStr = today.getFullYear() + '-' +
             String(today.getMonth() + 1).padStart(2, '0') + '-' +
             String(today.getDate()).padStart(2, '0')
-        const todayItem = chartData.find(d => d.date === todayStr) || {
-            investimento: 0, leads: 0, cpl: 0
-        }
-        return todayItem
-    }, [chartData])
+
+        const todayMetrics = displayedMetrics.filter(m => m.data_referencia === todayStr)
+        if (!todayMetrics.length) return { investimento: 0, leads: 0, cpl: 0 }
+
+        const agg = todayMetrics.reduce((acc, m) => {
+            const val = Number(m.resultado_valor) || 0
+            const isComm = isCommercial(m.resultado_nome)
+            return {
+                investimento: acc.investimento + (Number(m.investimento) || 0),
+                leads: acc.leads + (isComm ? val : 0)
+            }
+        }, { investimento: 0, leads: 0 })
+
+        return { ...agg, cpl: agg.leads > 0 ? agg.investimento / agg.leads : 0 }
+    }, [displayedMetrics])
 
     // Utils
     const formatCurrency = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val)
