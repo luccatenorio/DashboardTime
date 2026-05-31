@@ -1,219 +1,239 @@
 {
-  "name": "SYNC META ADS → DASHBOARD",
+  "name": "TRIME — Meta Ads Sync (Daily + Webhook)",
   "nodes": [
     {
       "parameters": {
         "rule": {
           "interval": [
-            {
-              "triggerAtHour": 6
-            }
+            { "field": "days", "daysInterval": 1, "triggerAtHour": 6, "triggerAtMinute": 0 }
           ]
         }
       },
-      "id": "trigger-diario",
-      "name": "Todo dia 6h",
+      "id": "trigger-daily",
+      "name": "Daily 06:00 BRT",
       "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [-900, 0]
+      "typeVersion": 1.3,
+      "position": [0, 0]
     },
     {
       "parameters": {
-        "operation": "getAll",
-        "tableId": "clients",
-        "returnAll": true,
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "ativo",
-              "condition": "eq",
-              "keyValue": true
-            }
-          ]
-        }
-      },
-      "id": "buscar-clientes",
-      "name": "Buscar Clientes Ativos",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
-      "position": [-660, 0],
-      "credentials": {
-        "supabaseApi": {
-          "id": "supa-cred",
-          "name": "Supabase account"
-        }
-      }
-    },
-    {
-      "parameters": {
+        "httpMethod": "POST",
+        "path": "trime-sync-client",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
         "options": {}
       },
-      "id": "loop-clientes",
-      "name": "Loop Clientes",
-      "type": "n8n-nodes-base.splitInBatches",
-      "typeVersion": 3,
-      "position": [-420, 0]
+      "id": "trigger-webhook",
+      "name": "Webhook /trime-sync-client",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 240],
+      "webhookId": "trime-sync-client"
     },
     {
       "parameters": {
-        "jsCode": "// ================================================================\n// BUSCA CAMPANHAS + INSIGHTS POR CAMPANHA\n// Usa this.helpers.httpRequest — compatível com n8n self-hosted\n// ================================================================\n\nconst META_TOKEN = 'EAAU7CTYOnEwBRcirsZAzAFjAbBJ0ifBZA91HdZB9Nea3NBMMgfkV2xKy9IJZAElrCIZA7PBIwj94MFeJwL4FWR2ryuVkAIkz1PXHBUwZA1CbL2cn2iMkUZCKzc1bGLTbwrxHNIkbF1sKYIyA37sSxN7nI3Byq6LRmMeeR1tVJahLaexM9Fvnzt0F5kTjkuU';\nconst BASE = 'https://graph.facebook.com/v21.0';\n\nconst clientId   = $json.id;\nconst clientName = $json.cliente || 'Sem nome';\nlet   conta      = $json.conta_anuncio || '';\n\nif (!conta) return [{ json: { status: 'sem_conta', cliente: clientName, metricas: [] } }];\nif (!conta.startsWith('act_')) conta = 'act_' + conta.replace('act_', '');\n\n// Helper GET com this.helpers.httpRequest (correto no n8n self-hosted)\nasync function apiGet(url, qs = {}) {\n  return await this.helpers.httpRequest({\n    method: 'GET',\n    url,\n    qs,\n    returnFullResponse: false,\n    ignoreHttpStatusErrors: false\n  });\n}\n\n// Para URLs de paginação (já contém todos os query params)\nasync function apiGetUrl(fullUrl) {\n  const u = new URL(fullUrl);\n  const qs = {};\n  u.searchParams.forEach((v, k) => { qs[k] = v; });\n  return await apiGet(u.origin + u.pathname, qs);\n}\n\nfunction processActions(actions) {\n  if (!actions || !actions.length) return { valor: 0, nome: null };\n  const m = {};\n  for (const a of actions) m[a.action_type] = parseFloat(a.value || 0);\n\n  for (const k of ['lead','leads','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','submit_application'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  for (const k of ['onsite_conversion.messaging_conversation_started_7d','onsite_conversion.messaging_conversation_started_1d','omnichannel_messaging_conversation_started_7d','omnichannel_messaging_conversation_started','onsite_conversion.messaging_first_reply'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  for (const k of ['contact','schedule'])\n    if (m[k] > 0) return { valor: m[k], nome: k };\n\n  if (m['purchase'] > 0) return { valor: m['purchase'], nome: 'purchase' };\n  return { valor: 0, nome: null };\n}\n\n// 1. Buscar campanhas da conta\nconst campData = await apiGet(`${BASE}/${conta}/campaigns`, {\n  access_token: META_TOKEN,\n  fields: 'id,name,status,objective',\n  limit: '100'\n});\n\nconst campaigns = campData.data || [];\nif (!campaigns.length) {\n  return [{ json: { status: 'sem_campanhas', cliente: clientName, metricas: [] } }];\n}\n\n// 2. Para cada campanha, buscar insights individualmente\nconst metricas = [];\n\nfor (const camp of campaigns) {\n  let insData;\n  try {\n    insData = await apiGet(`${BASE}/${camp.id}/insights`, {\n      access_token: META_TOKEN,\n      fields: 'date_start,spend,impressions,reach,clicks,actions',\n      time_increment: '1',\n      date_preset: 'last_30d',\n      limit: '100'\n    });\n  } catch(e) { continue; }\n\n  const rows = insData.data || [];\n\n  // Paginação\n  let nextUrl = insData.paging?.next;\n  while (nextUrl) {\n    try {\n      const page = await apiGetUrl(nextUrl);\n      rows.push(...(page.data || []));\n      nextUrl = page.paging?.next;\n    } catch(e) { break; }\n  }\n\n  for (const row of rows) {\n    if (!row.date_start) continue;\n    const res = processActions(row.actions || []);\n    metricas.push({\n      client_id:       clientId,\n      campaign_id:     camp.id,\n      campaign_name:   camp.name || 'Sem nome',\n      data_referencia: row.date_start,\n      investimento:    parseFloat(row.spend        || 0),\n      impressoes:      parseInt(row.impressions    || 0),\n      cliques_link:    parseInt(row.clicks         || 0),\n      alcance:         parseInt(row.reach          || 0),\n      resultado_valor: res.valor,\n      resultado_nome:  res.nome\n    });\n  }\n}\n\nreturn [{ json: { status: 'ok', cliente: clientName, cliente_id: clientId, conta_anuncio: conta, total_metricas: metricas.length, metricas } }];"
+        "method": "GET",
+        "url": "https://atlrypolvbxlfozfnujv.supabase.co/rest/v1/clients",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "id,cliente,conta_anuncio" },
+            { "name": "ativo", "value": "eq.true" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" }
+          ]
+        },
+        "options": { "timeout": 30000 }
       },
-      "id": "buscar-e-processar",
-      "name": "Buscar Campanhas + Insights",
+      "id": "fetch-clients",
+      "name": "Fetch Active Clients",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(i => i.json);\nconst client_id = items[0]?.client_id;\nconst conta_anuncio = items[0]?.conta_anuncio;\nif (!client_id || !conta_anuncio) return [{ json: { erro: 'webhook precisa de client_id e conta_anuncio no body' } }];\nreturn [{ json: { id: client_id, conta_anuncio, cliente: items[0]?.cliente || '' } }];"
+      },
+      "id": "webhook-payload",
+      "name": "Webhook Payload -> Client",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-160, 0]
+      "position": [240, 240]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-clients",
+      "name": "Loop Clients",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [480, 120]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const META_TOKEN = $env.META_ACCESS_TOKEN || 'EAAU7CTYOnEwBRcirsZAzAFjAbBJ0ifBZA91HdZB9Nea3NBMMgfkV2xKy9IJZAElrCIZA7PBIwj94MFeJwL4FWR2ryuVkAIkz1PXHBUwZA1CbL2cn2iMkUZCKzc1bGLTbwrxHNIkbF1sKYIyA37sSxN7nI3Byq6LRmMeeR1tVJahLaexM9Fvnzt0F5kTjkuU';\nconst BASE = 'https://graph.facebook.com/v21.0';\nconst c = $input.item.json;\nconst clientId = c.id;\nconst clientName = c.cliente || '';\nlet acct = c.conta_anuncio || '';\nif (!acct) return { json: { status: 'sem_conta', cliente: clientName, cliente_id: clientId, metricas: [], total_metricas: 0, last_sync_at: new Date().toISOString() } };\nif (!acct.startsWith('act_')) acct = 'act_' + acct.replace('act_', '');\nconst helpers = this.helpers;\nasync function fb(url, qs) { try { return await helpers.httpRequest({ method: 'GET', url, qs, ignoreHttpStatusErrors: true, timeout: 30000 }); } catch (e) { return { error: String(e && e.message || e) }; } }\nconst result = { status: 'ok', cliente: clientName, cliente_id: clientId, metricas: [], total_metricas: 0, last_sync_at: new Date().toISOString(), errors: [] };\nfor (const cfg of [['last_30d','30d'], ['last_7d','7d']]) {\n  const r = await fb(BASE + '/' + acct + '/insights', { access_token: META_TOKEN, level: 'account', date_preset: cfg[0], fields: 'reach,impressions,spend' });\n  if (r && r.data && r.data[0]) {\n    const row = r.data[0];\n    result['account_reach_' + cfg[1]] = parseInt(row.reach || 0);\n    result['account_impressions_' + cfg[1]] = parseInt(row.impressions || 0);\n    result['account_spend_' + cfg[1]] = parseFloat(row.spend || 0);\n  } else if (r && r.error) { result.errors.push('account ' + cfg[1] + ': ' + r.error); }\n}\nconst acc = await fb(BASE + '/' + acct, { access_token: META_TOKEN, fields: 'name,balance,currency,account_status,amount_spent,spend_cap,funding_source_details' });\nif (acc && !acc.error) {\n  result.account_currency = acc.currency || 'BRL';\n  result.account_status = parseInt(acc.account_status || 0);\n  result.account_amount_spent = parseFloat(acc.amount_spent || 0) / 100;\n  result.account_spend_cap = parseFloat(acc.spend_cap || 0) / 100;\n  let balance = 0;\n  const fs = acc.funding_source_details || {};\n  const display = fs.display_string || '';\n  if (display) { result.account_funding_display = display; const m = display.match(/R\\$\\s*([\\d.,]+)/); if (m) { balance = parseFloat(m[1].replace(/\\./g, '').replace(',', '.')) || 0; } }\n  if (!balance && acc.balance) balance = parseFloat(acc.balance) / 100;\n  result.account_balance = balance;\n  if (fs.type === 1) result.account_funding_type = 'prepaid';\n  else if (fs.type) result.account_funding_type = 'postpaid';\n}\nconst camps = await fb(BASE + '/' + acct + '/campaigns', { access_token: META_TOKEN, fields: 'id,name,status,objective', limit: '100' });\nif (!camps || !camps.data) { result.errors.push('no campaigns: ' + JSON.stringify(camps && camps.error || camps)); return { json: result }; }\nfunction sumLeads(actions) {\n  if (!actions || !actions.length) return { valor: 0, nome: null };\n  const m = {};\n  for (const a of actions) m[a.action_type] = parseFloat(a.value || 0);\n  const cats = [\n    ['lead','leads','onsite_conversion.lead_grouped','offsite_conversion.fb_pixel_lead','submit_application'],\n    ['onsite_conversion.messaging_conversation_started_7d','onsite_conversion.messaging_conversation_started_1d','omnichannel_messaging_conversation_started_7d','omnichannel_messaging_conversation_started','onsite_conversion.messaging_first_reply'],\n    ['contact','schedule'],\n    ['purchase']\n  ];\n  let total = 0; const nomes = [];\n  for (const cat of cats) { for (const k of cat) { if ((m[k]||0) > 0) { total += m[k]; nomes.push(k); break; } } }\n  if (total <= 0) return { valor: 0, nome: null };\n  return { valor: total, nome: nomes.join(',') };\n}\nfor (const camp of camps.data) {\n  let resp = await fb(BASE + '/' + camp.id + '/insights', { access_token: META_TOKEN, fields: 'date_start,spend,impressions,reach,clicks,actions', time_increment: '1', date_preset: 'last_30d', limit: '100' });\n  if (!resp || !resp.data) continue;\n  const rows = resp.data.slice();\n  let next = resp.paging && resp.paging.next;\n  while (next) { const u = new URL(next); const qs = {}; u.searchParams.forEach(function(v,k){ qs[k]=v; }); const page = await fb(u.origin + u.pathname, qs); if (!page || !page.data) break; rows.push.apply(rows, page.data); next = page.paging && page.paging.next; }\n  for (const row of rows) {\n    if (!row.date_start) continue;\n    const res = sumLeads(row.actions);\n    result.metricas.push({ client_id: clientId, campaign_id: camp.id, campaign_name: camp.name || '', data_referencia: row.date_start, investimento: parseFloat(row.spend || 0), impressoes: parseInt(row.impressions || 0), cliques_link: parseInt(row.clicks || 0), alcance: parseInt(row.reach || 0), resultado_valor: res.valor, resultado_nome: res.nome });\n  }\n}\nresult.total_metricas = result.metricas.length;\nreturn { json: result };"
+      },
+      "id": "fetch-meta",
+      "name": "Fetch Meta Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 120]
     },
     {
       "parameters": {
         "conditions": {
+          "combinator": "and",
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
           "conditions": [
             {
               "id": "has-data",
-              "leftValue": "={{ $json.metricas.length }}",
+              "leftValue": "={{ $json.total_metricas }}",
               "rightValue": 0,
               "operator": { "type": "number", "operation": "gt" }
             }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
+          ]
+        }
       },
-      "id": "tem-metricas",
-      "name": "Tem Métricas?",
+      "id": "has-metrics",
+      "name": "Has Metrics?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [100, 0]
+      "typeVersion": 2.3,
+      "position": [960, 120]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://werkiwmegzqdsgfhcglb.supabase.co/rest/v1/dashboard_campaign_metrics",
+        "url": "https://atlrypolvbxlfozfnujv.supabase.co/rest/v1/dashboard_campaign_metrics",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "apikey",         "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
-            { "name": "Authorization",  "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
-            { "name": "Content-Type",   "value": "application/json" },
-            { "name": "Prefer",         "value": "resolution=merge-duplicates,return=minimal" }
+            { "name": "apikey", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "resolution=merge-duplicates,return=minimal" }
           ]
         },
         "sendBody": true,
+        "contentType": "json",
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.metricas) }}",
-        "options": {}
+        "options": { "timeout": 60000 }
       },
-      "id": "upsert-metricas",
-      "name": "Upsert Métricas Supabase",
+      "id": "upsert-metrics",
+      "name": "Upsert Metrics",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [360, -80],
+      "typeVersion": 4.4,
+      "position": [1200, 0],
       "continueOnFail": true
     },
     {
       "parameters": {
         "method": "PATCH",
-        "url": "=https://werkiwmegzqdsgfhcglb.supabase.co/rest/v1/clients?id=eq.{{ $node[\"Buscar Campanhas + Insights\"].json.cliente_id }}",
+        "url": "=https://atlrypolvbxlfozfnujv.supabase.co/rest/v1/clients?id=eq.{{ $('Fetch Meta Data').item.json.cliente_id }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "apikey",        "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
-            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indlcmtpd21lZ3pxZHNnZmhjZ2xiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTQxMDksImV4cCI6MjA4OTE3MDEwOX0.xHztZ38cpcaMop97PFwSqDQXg92AXWCEDgjBmC3xV7E" },
-            { "name": "Content-Type",  "value": "application/json" },
-            { "name": "Prefer",        "value": "return=minimal" }
+            { "name": "apikey", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
           ]
         },
         "sendBody": true,
+        "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={ \"last_sync_at\": \"{{ new Date().toISOString() }}\" }",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify({ last_sync_at: $('Fetch Meta Data').item.json.last_sync_at, account_reach_30d: $('Fetch Meta Data').item.json.account_reach_30d || 0, account_impressions_30d: $('Fetch Meta Data').item.json.account_impressions_30d || 0, account_spend_30d: $('Fetch Meta Data').item.json.account_spend_30d || 0, account_reach_7d: $('Fetch Meta Data').item.json.account_reach_7d || 0, account_impressions_7d: $('Fetch Meta Data').item.json.account_impressions_7d || 0, account_spend_7d: $('Fetch Meta Data').item.json.account_spend_7d || 0, account_balance: $('Fetch Meta Data').item.json.account_balance || 0, account_currency: $('Fetch Meta Data').item.json.account_currency || 'BRL', account_funding_type: $('Fetch Meta Data').item.json.account_funding_type || null, account_funding_display: $('Fetch Meta Data').item.json.account_funding_display || null, account_status: $('Fetch Meta Data').item.json.account_status || null, account_amount_spent: $('Fetch Meta Data').item.json.account_amount_spent || 0, account_spend_cap: $('Fetch Meta Data').item.json.account_spend_cap || 0 }) }}",
+        "options": { "timeout": 30000 }
       },
-      "id": "update-cliente",
-      "name": "Update last_sync_at",
+      "id": "update-client-with",
+      "name": "Update Client (with metrics)",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [620, -80],
+      "typeVersion": 4.4,
+      "position": [1440, 0],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "amount": 2
+        "method": "PATCH",
+        "url": "=https://atlrypolvbxlfozfnujv.supabase.co/rest/v1/clients?id=eq.{{ $json.cliente_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Authorization", "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0bHJ5cG9sdmJ4bGZvemZudWp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTIzMDgsImV4cCI6MjA5MjQ2ODMwOH0.q6oYilF6LIaYCYN2gNT-Y81J0oxMhfP8YVwO-ZDIThI" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ last_sync_at: $json.last_sync_at }) }}",
+        "options": { "timeout": 30000 }
       },
-      "id": "pausa-2s",
-      "name": "Pausa 2s",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [860, 0],
-      "webhookId": "sync-pause-id-v2"
+      "id": "update-client-no",
+      "name": "Update Client (no metrics)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1200, 240],
+      "continueOnFail": true
     },
     {
-      "parameters": {
-        "jsCode": "// Cliente sem métricas — apenas loga e continua\nconst c = $json.cliente || 'N/A';\nconst s = $json.status || 'sem_dados';\nreturn [{ json: { status: s, cliente: c } }];"
-      },
-      "id": "sem-metricas-skip",
-      "name": "Sem Métricas (Skip)",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [360, 120]
+      "parameters": { "resume": "timeInterval", "amount": 3, "unit": "seconds" },
+      "id": "wait-yes",
+      "name": "Pause 3s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1680, 0],
+      "webhookId": "trime-wait-yes"
+    },
+    {
+      "parameters": { "resume": "timeInterval", "amount": 3, "unit": "seconds" },
+      "id": "wait-no",
+      "name": "Pause 3s (skip)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1440, 240],
+      "webhookId": "trime-wait-no"
     }
   ],
   "connections": {
-    "Todo dia 6h": {
-      "main": [
-        [{ "node": "Buscar Clientes Ativos", "type": "main", "index": 0 }]
-      ]
-    },
-    "Buscar Clientes Ativos": {
-      "main": [
-        [{ "node": "Loop Clientes", "type": "main", "index": 0 }]
-      ]
-    },
-    "Loop Clientes": {
+    "Daily 06:00 BRT": { "main": [[{ "node": "Fetch Active Clients", "type": "main", "index": 0 }]] },
+    "Webhook /trime-sync-client": { "main": [[{ "node": "Webhook Payload -> Client", "type": "main", "index": 0 }]] },
+    "Fetch Active Clients": { "main": [[{ "node": "Loop Clients", "type": "main", "index": 0 }]] },
+    "Webhook Payload -> Client": { "main": [[{ "node": "Loop Clients", "type": "main", "index": 0 }]] },
+    "Loop Clients": {
       "main": [
         [],
-        [{ "node": "Buscar Campanhas + Insights", "type": "main", "index": 0 }]
+        [{ "node": "Fetch Meta Data", "type": "main", "index": 0 }]
       ]
     },
-    "Buscar Campanhas + Insights": {
+    "Fetch Meta Data": { "main": [[{ "node": "Has Metrics?", "type": "main", "index": 0 }]] },
+    "Has Metrics?": {
       "main": [
-        [{ "node": "Tem Métricas?", "type": "main", "index": 0 }]
+        [{ "node": "Upsert Metrics", "type": "main", "index": 0 }],
+        [{ "node": "Update Client (no metrics)", "type": "main", "index": 0 }]
       ]
     },
-    "Tem Métricas?": {
-      "main": [
-        [{ "node": "Upsert Métricas Supabase", "type": "main", "index": 0 }],
-        [{ "node": "Sem Métricas (Skip)", "type": "main", "index": 0 }]
-      ]
-    },
-    "Upsert Métricas Supabase": {
-      "main": [
-        [{ "node": "Update last_sync_at", "type": "main", "index": 0 }]
-      ]
-    },
-    "Update last_sync_at": {
-      "main": [
-        [{ "node": "Pausa 2s", "type": "main", "index": 0 }]
-      ]
-    },
-    "Pausa 2s": {
-      "main": [
-        [{ "node": "Loop Clientes", "type": "main", "index": 0 }]
-      ]
-    },
-    "Sem Métricas (Skip)": {
-      "main": [
-        [{ "node": "Pausa 2s", "type": "main", "index": 0 }]
-      ]
-    }
+    "Upsert Metrics": { "main": [[{ "node": "Update Client (with metrics)", "type": "main", "index": 0 }]] },
+    "Update Client (with metrics)": { "main": [[{ "node": "Pause 3s", "type": "main", "index": 0 }]] },
+    "Update Client (no metrics)": { "main": [[{ "node": "Pause 3s (skip)", "type": "main", "index": 0 }]] },
+    "Pause 3s": { "main": [[{ "node": "Loop Clients", "type": "main", "index": 0 }]] },
+    "Pause 3s (skip)": { "main": [[{ "node": "Loop Clients", "type": "main", "index": 0 }]] }
   },
-  "settings": {
-    "executionOrder": "v1",
-    "saveManualExecutions": true,
-    "callerPolicy": "workflowsFromSameOwner"
-  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
   "staticData": null,
   "tags": [],
-  "triggerCount": 1,
+  "triggerCount": 2,
   "pinData": {}
 }

@@ -19,6 +19,12 @@ const Dashboard = () => {
     const [accessGranted, setAccessGranted] = useState(false)
     const [isMobile, setIsMobile] = useState(window.innerWidth <= 768)
     const [clientDetails, setClientDetails] = useState(null) // metadata like sync time, totals
+    const [showCreateForm, setShowCreateForm] = useState(false)
+    const [newClientName, setNewClientName] = useState('')
+    const [newClientAccount, setNewClientAccount] = useState('')
+    const [creating, setCreating] = useState(false)
+    const [createdLink, setCreatedLink] = useState(null)
+    const [copiedId, setCopiedId] = useState(null)
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -136,6 +142,79 @@ const Dashboard = () => {
     const displayedMetrics = isAdmin
         ? (selectedClient ? metrics.filter(m => m.client_id === selectedClient) : []) // Admin + Selection
         : metrics // Normal user (already filtered)
+
+    const generateAccessHash = () => {
+        const bytes = new Uint8Array(18)
+        crypto.getRandomValues(bytes)
+        return Array.from(bytes, b => b.toString(36)).join('').replace(/[^a-z0-9]/g, '').slice(0, 30)
+    }
+
+    const handleCreateClient = async () => {
+        const name = newClientName.trim()
+        let account = newClientAccount.trim().replace(/^act_/, '')
+        if (!name || !account) {
+            alert('Preencha nome e ID da conta de anúncio')
+            return
+        }
+        if (!/^\d+$/.test(account)) {
+            alert('O ID da conta deve conter apenas números (sem o prefixo act_)')
+            return
+        }
+        setCreating(true)
+        try {
+            const { data: existing } = await supabase
+                .from('clients')
+                .select('id, cliente, observacoes')
+                .ilike('cliente', name)
+                .maybeSingle()
+
+            const hash = existing?.observacoes && existing.observacoes.length >= 20
+                ? existing.observacoes
+                : generateAccessHash()
+
+            if (existing) {
+                await supabase.from('clients').update({
+                    conta_anuncio: `act_${account}`,
+                    ativo: true,
+                    observacoes: hash
+                }).eq('id', existing.id)
+            } else {
+                await supabase.from('clients').insert({
+                    cliente: name,
+                    conta_anuncio: `act_${account}`,
+                    ativo: true,
+                    observacoes: hash
+                })
+            }
+
+            const link = `${window.location.origin}/#/c/${hash}`
+            setCreatedLink(link)
+
+            const webhookUrl = import.meta.env.VITE_N8N_SYNC_WEBHOOK
+            if (webhookUrl) {
+                fetch(webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cliente: name, conta_anuncio: `act_${account}` })
+                }).catch(() => {})
+            }
+
+            const { data: refreshed } = await supabase
+                .from('clients')
+                .select('*')
+                .eq('ativo', true)
+                .order('cliente')
+            setClients(refreshed || [])
+
+            setNewClientName('')
+            setNewClientAccount('')
+        } catch (e) {
+            console.error(e)
+            alert('Erro ao criar cliente: ' + (e.message || e))
+        } finally {
+            setCreating(false)
+        }
+    }
 
     // Admin: Function to load metrics when a client is clicked
     const handleAdminSelectClient = async (clientId) => {
@@ -255,19 +334,20 @@ const Dashboard = () => {
         }, { investimento: 0, impressions: 0, clicks: 0, reach: 0, leads: 0, engagement: 0 })
     }, [filteredData])
 
-    // --- ACCURATE TOTALS OVERRIDE (For 30 Days view) ---
-    // If we have Account Level total (from client details) and are viewing 30 days, use that.
-    // Otherwise, we MUST default to the sum (totals.reach) because we don't have other data,
-    // BUT we know it's technically wrong (duplicated).
-    // The user instruction "Forbidden to sum" is strong, but showing 0 is worse.
-    // I will prioritize the Official 30d data.
-    const displayReach = (dateRange === '30' && clientDetails?.account_reach_30d > 0)
-        ? clientDetails.account_reach_30d
-        : totals.reach
+    // --- ACCURATE TOTALS OVERRIDE ---
+    // Meta API returns deduplicated reach/impressions at the account level for last_7d and last_30d.
+    // Summing per-campaign inflates these numbers (same user counted across multiple campaigns),
+    // so prefer the official account totals when the date range matches.
+    // For "+today" variants we still use the official N-day number (it omits today's reach but is
+    // the deduplicated truth for the window; alternative is the inflated sum, which is worse).
+    const baseRange = dateRange.replace('_today', '')
+    const officialReach = baseRange === '7' ? clientDetails?.account_reach_7d : clientDetails?.account_reach_30d
+    const officialImpressions = baseRange === '7' ? clientDetails?.account_impressions_7d : clientDetails?.account_impressions_30d
 
-    const displayImpressions = (dateRange === '30' && clientDetails?.account_impressions_30d > 0)
-        ? clientDetails.account_impressions_30d
-        : totals.impressions
+    const displayReach = officialReach > 0 ? officialReach : totals.reach
+    const displayImpressions = officialImpressions > 0 ? officialImpressions : totals.impressions
+    const reachIsOfficial = officialReach > 0
+    const impressionsIsOfficial = officialImpressions > 0
 
     // Computed Metrics
     const cpl = totals.leads > 0 ? totals.investimento / totals.leads : 0
@@ -449,24 +529,131 @@ const Dashboard = () => {
             <div className="dashboard-container animate-fade-in">
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
-                    <h2 style={{ color: 'var(--text-primary)', marginBottom: '32px', fontSize: '1.5rem', fontWeight: '600' }}>Selecione um Cliente</h2>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+                        <h2 style={{ color: 'var(--text-primary)', margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
+                            Clientes ({clients.length})
+                        </h2>
+                        <button
+                            onClick={() => { setShowCreateForm(true); setCreatedLink(null); }}
+                            style={{
+                                background: 'linear-gradient(135deg, #3b82f6, #6366f1)',
+                                color: '#fff', border: 'none', padding: '10px 20px',
+                                borderRadius: '8px', fontWeight: '600', cursor: 'pointer',
+                                fontSize: '0.9rem', boxShadow: '0 4px 12px rgba(59,130,246,0.3)'
+                            }}
+                        >
+                            + Novo cliente
+                        </button>
+                    </div>
+
+                    {showCreateForm && (
+                        <div className="glass-panel" style={{ padding: '24px', marginBottom: '32px' }}>
+                            <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Adicionar cliente</h3>
+                            {createdLink ? (
+                                <div>
+                                    <p style={{ color: '#10b981', marginTop: 0 }}>✓ Cliente criado. Link de acesso:</p>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: '#0f0f12', padding: '12px', borderRadius: '6px', border: '1px solid #2a2a30' }}>
+                                        <code style={{ color: '#f97316', fontSize: '0.85rem', flex: 1, wordBreak: 'break-all' }}>{createdLink}</code>
+                                        <button
+                                            onClick={() => navigator.clipboard.writeText(createdLink)}
+                                            style={{ background: '#1f1f25', color: '#fff', border: '1px solid #2a2a30', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}
+                                        >Copiar</button>
+                                    </div>
+                                    <button
+                                        onClick={() => { setShowCreateForm(false); setCreatedLink(null); }}
+                                        style={{ marginTop: '16px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer' }}
+                                    >Fechar</button>
+                                </div>
+                            ) : (
+                                <>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                                        <div>
+                                            <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>Nome do cliente</label>
+                                            <input
+                                                type="text" value={newClientName}
+                                                onChange={(e) => setNewClientName(e.target.value)}
+                                                placeholder="Ex: João Silva Imóveis"
+                                                style={{ width: '100%', background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '10px 12px', borderRadius: '6px', fontSize: '0.95rem' }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.75rem', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>ID conta Meta (sem act_)</label>
+                                            <input
+                                                type="text" value={newClientAccount}
+                                                onChange={(e) => setNewClientAccount(e.target.value)}
+                                                placeholder="Ex: 199691101179385"
+                                                style={{ width: '100%', background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '10px 12px', borderRadius: '6px', fontSize: '0.95rem' }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <button
+                                            onClick={handleCreateClient}
+                                            disabled={creating}
+                                            style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '6px', fontWeight: '600', cursor: creating ? 'wait' : 'pointer', opacity: creating ? 0.7 : 1 }}
+                                        >{creating ? 'Criando...' : 'Criar e gerar link'}</button>
+                                        <button
+                                            onClick={() => { setShowCreateForm(false); setNewClientName(''); setNewClientAccount(''); }}
+                                            style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '10px 16px', borderRadius: '6px', cursor: 'pointer' }}
+                                        >Cancelar</button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    )}
+
                     <div style={{
                         display: 'grid',
                         gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                         gap: '20px'
                     }}>
-                        {clients.map(client => (
-                            <div
-                                key={client.id}
-                                onClick={() => handleAdminSelectClient(client.id)}
-                                className="admin-client-card"
-                            >
-                                <div className="admin-client-avatar">
-                                    {client.cliente.substr(0, 2).toUpperCase()}
+                        {clients.map(client => {
+                            const clientLink = `${window.location.origin}/#/c/${client.observacoes}`
+                            const justCopied = copiedId === client.id
+                            return (
+                                <div
+                                    key={client.id}
+                                    onClick={() => handleAdminSelectClient(client.id)}
+                                    className="admin-client-card"
+                                    style={{ position: 'relative' }}
+                                >
+                                    <div className="admin-client-avatar">
+                                        {client.cliente.substr(0, 2).toUpperCase()}
+                                    </div>
+                                    <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem', flex: 1 }}>{client.cliente}</span>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation()
+                                            navigator.clipboard.writeText(clientLink)
+                                            setCopiedId(client.id)
+                                            setTimeout(() => setCopiedId(prev => prev === client.id ? null : prev), 1500)
+                                        }}
+                                        title={justCopied ? 'Link copiado' : 'Copiar link do cliente'}
+                                        aria-label="Copiar link"
+                                        style={{
+                                            background: 'transparent',
+                                            border: 'none',
+                                            cursor: 'pointer',
+                                            padding: '6px',
+                                            borderRadius: '6px',
+                                            color: justCopied ? '#10b981' : 'var(--text-secondary)',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            transition: 'background 0.15s, color 0.15s'
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; if (!justCopied) e.currentTarget.style.color = 'var(--text-primary)' }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!justCopied) e.currentTarget.style.color = 'var(--text-secondary)' }}
+                                    >
+                                        {justCopied ? (
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                        ) : (
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                        )}
+                                    </button>
                                 </div>
-                                <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem' }}>{client.cliente}</span>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 </div>
             </div>
@@ -478,6 +665,39 @@ const Dashboard = () => {
     return (
         <div className="dashboard-container animate-fade-in">
             <Header />
+
+            {clientDetails && (clientDetails.account_balance > 0 || clientDetails.account_funding_display) && (() => {
+                const balance = Number(clientDetails.account_balance) || 0
+                const dailyAvg = (Number(clientDetails.account_spend_30d) || 0) / 30
+                const daysLeft = dailyAvg > 0 && balance > 0 ? Math.floor(balance / dailyAvg) : null
+                const color = balance <= 0 ? '#ef4444' : (daysLeft !== null && daysLeft <= 3 ? '#ef4444' : (daysLeft !== null && daysLeft <= 7 ? '#f59e0b' : '#10b981'))
+                const isPrepaid = clientDetails.account_funding_type === 'prepaid' || balance > 0
+                return (
+                    <div className="glass-panel" style={{ padding: '16px 20px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', flexWrap: 'wrap', borderLeft: `3px solid ${color}` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
+                            <div>
+                                <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px' }}>
+                                    {isPrepaid ? 'Saldo da conta (pré-pago)' : 'Conta'}
+                                </div>
+                                <div style={{ color, fontSize: '1.5rem', fontWeight: '700' }}>
+                                    {clientDetails.account_funding_display || formatCurrency(balance)}
+                                </div>
+                            </div>
+                            {daysLeft !== null && (
+                                <div>
+                                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px' }}>Dura aprox.</div>
+                                    <div style={{ color: 'var(--text-primary)', fontSize: '1.1rem', fontWeight: '600' }}>
+                                        {daysLeft === 0 ? 'Acaba hoje' : `${daysLeft} dia${daysLeft === 1 ? '' : 's'}`}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        {balance <= 0 && isPrepaid && (
+                            <div style={{ color: '#ef4444', fontWeight: '600', fontSize: '0.9rem' }}>⚠ Recarregue para reativar campanhas</div>
+                        )}
+                    </div>
+                )
+            })()}
 
             <div className="filters-bar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
                 <select
@@ -498,11 +718,11 @@ const Dashboard = () => {
                 <MetricCard title="CPL" value={formatCurrency(cpl)} sub="Custo/Lead" icon={<DollarSign size={16} />} />
                 <MetricCard title="Alcance"
                     value={formatNumber(displayReach)}
-                    sub={dateRange === '30' && clientDetails?.account_reach_30d > 0 ? "Contas (Oficial 30d)" : "Contas Alcançadas"}
+                    sub={reachIsOfficial ? `Contas (Oficial ${baseRange}d)` : "Contas Alcançadas"}
                     icon={<Eye size={16} />} />
                 <MetricCard title="Impressões"
                     value={formatNumber(displayImpressions)}
-                    sub={dateRange === '30' && clientDetails?.account_impressions_30d > 0 ? "Exibições (Ref. 30d)" : "Exibições num total"}
+                    sub={impressionsIsOfficial ? `Exibições (Oficial ${baseRange}d)` : "Exibições num total"}
                     icon={<Eye size={16} />} />
                 <MetricCard title="CPM" value={formatCurrency(cpm)} sub="Custo/1.000 Imp" icon={<TrendingUp size={16} />} />
                 <MetricCard title="Cliques Link" value={formatNumber(totals.clicks)} sub="Total de cliques" icon={<MousePointer2 size={16} />} />

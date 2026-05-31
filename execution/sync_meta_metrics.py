@@ -4,6 +4,7 @@ Sincroniza dados históricos e mantém atualizado a cada execução
 """
 import os
 import sys
+import re
 import time
 import json
 from datetime import datetime, timedelta
@@ -12,8 +13,12 @@ from dotenv import load_dotenv
 import requests
 from supabase import create_client, Client
 
-# Configurar encoding para Windows
-
+# Force UTF-8 stdout/stderr on Windows so emojis in campaign names don't crash print()
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -130,10 +135,8 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
     """
     if not until_date:
         until_date = datetime.now().strftime("%Y-%m-%d")
-    
-        # Meta tem limite de 37 meses para insights
-        # Usamos 30 dias para garantir dados recentes e performance rápida (solicitação do usuário)
-        # (Execução pontual de 90 dias feita para limpeza)
+    if not since_date:
+        # Janela rolante de 30 dias (Meta retém até 37 meses; mantemos curto para velocidade)
         since_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     
     url = f"{META_BASE_URL}/{campaign_id}/insights"
@@ -168,59 +171,45 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
 
 def process_actions(actions: List[Dict], objective: str = None, campaign_name: str = "", insight_data: Dict = None) -> tuple:
     """
-    Processa array de ações e retorna (resultado_valor, resultado_nome)
-    
-    Prioridade de métricas (ordem de importância):
-    1. Leads de formulário (lead, leads, lead_grouped, fb_pixel_lead)
-    2. Conversas de mensagem (messaging_conversation_started)
-    3. Contatos e agendamentos
-    4. Compras
-    
-    Retorna APENAS o valor da métrica mais relevante encontrada,
-    NÃO concatena múltiplos action types.
+    Processa array de ações e retorna (resultado_valor, resultado_nome).
+
+    Regra de negócio Trime: 1 cadastro = 1 lead, 1 conversa iniciada = 1 lead.
+    Quando a mesma campanha tem cadastro + mensagem no mesmo dia, SOMAR os dois.
+    Não somar tipos duplicados (ex: messaging_started_7d e _1d são overlapping —
+    pega um único representante por categoria).
     """
     if not actions:
         return (0.0, None)
-    
+
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
-    
-    # 1. Cadastros/Formulários (Super Prioridade)
-    lead_keys = [
-        'lead',
-        'leads', 
-        'onsite_conversion.lead_grouped',
-        'offsite_conversion.fb_pixel_lead',
-        'submit_application',
+
+    # Cada tupla = uma categoria comercial. Pega o PRIMEIRO key com valor > 0
+    # de cada categoria (evita duplicar attribution windows do mesmo evento).
+    categories = [
+        ('cadastro', ['lead', 'leads', 'onsite_conversion.lead_grouped',
+                      'offsite_conversion.fb_pixel_lead', 'submit_application']),
+        ('mensagem', ['onsite_conversion.messaging_conversation_started_7d',
+                      'onsite_conversion.messaging_conversation_started_1d',
+                      'omnichannel_messaging_conversation_started_7d',
+                      'omnichannel_messaging_conversation_started',
+                      'onsite_conversion.messaging_first_reply']),
+        ('contato', ['contact', 'schedule']),
+        ('compra', ['purchase']),
     ]
-    for key in lead_keys:
-        if key in action_map and action_map[key] > 0:
-            return (action_map[key], key)
-        
-    # 2. Início de Conversa (Mensagens)
-    msg_keys = [
-        'onsite_conversion.messaging_conversation_started_7d',
-        'onsite_conversion.messaging_conversation_started_1d',
-        'omnichannel_messaging_conversation_started_7d',
-        'omnichannel_messaging_conversation_started',
-        'onsite_conversion.messaging_first_reply',
-    ]
-    for key in msg_keys:
-        if key in action_map and action_map[key] > 0:
-            return (action_map[key], key)
-    
-    # 3. Contatos e Agendamentos
-    contact_keys = ['contact', 'schedule']
-    for key in contact_keys:
-        if key in action_map and action_map[key] > 0:
-            return (action_map[key], key)
-            
-    # 4. Compras
-    if 'purchase' in action_map and action_map['purchase'] > 0:
-        return (action_map['purchase'], 'purchase')
-        
-    # Nenhuma métrica comercial encontrada - retorna 0
-    # (não poluir o painel "Leads" com cliques, engajamentos, etc.)
-    return (0.0, None)
+
+    total = 0.0
+    nomes = []
+    for _, keys in categories:
+        for k in keys:
+            v = action_map.get(k, 0)
+            if v > 0:
+                total += v
+                nomes.append(k)
+                break  # próxima categoria — não soma janelas do mesmo evento
+
+    if total <= 0:
+        return (0.0, None)
+    return (total, ','.join(nomes))
 
 
 def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
@@ -361,53 +350,104 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                 log_error(client_id, "sync_meta_metrics", "error", error_msg,
                          {"campaign_id": campaign_id, "campaign_name": campaign_name})
         
-        # ----------------------------------------------------------------
-        # 4. ATUALIZAÇÃO NÍVEL CONTA (Alcance/Impressões 30d REAIS)
-        # ----------------------------------------------------------------
-        try:
-            # 1. Fetch Account Insights (last_30d)
-            acc_url = f"{META_BASE_URL}/{ad_account_id}/insights"
-            acc_params = {
-                'access_token': META_ACCESS_TOKEN,
-                'level': 'account',
-                'date_preset': 'last_30d',
-                'fields': 'reach,impressions,spend'
-            }
-            resp = requests.get(acc_url, params=acc_params)
-            
-            # 2. Update Client Table
-            update_data = {'last_sync_at': datetime.now().isoformat()}
-            
-            if resp.status_code == 200:
-                d = resp.json().get('data', [])
-                if d:
-                    item = d[0]
-                    update_data['account_reach_30d'] = int(item.get('reach', 0))
-                    update_data['account_impressions_30d'] = int(item.get('impressions', 0))
-                    update_data['account_spend_30d'] = float(item.get('spend', 0))
-                    print(f"      [CONTA] Reach 30d: {item.get('reach')} | Impr: {item.get('impressions')}")
-            
-            # Try update (ignoring if cols don't exist yet - user needs to run SQL)
-            try:
-                supabase.table('clients').update(update_data).eq('id', client_id).execute()
-            except Exception as ex_db:
-                print(f"      AVISO DB: Falha ao atualizar dados da conta (Colunas existem?): {ex_db}")
-                
-        except Exception as e_acc:
-            print(f"      ERRO Account Insights: {e_acc}")
-
-        # Log de sucesso
+        # Log de sucesso (campaign-level)
         log_error(client_id, "sync_meta_metrics", "success",
                  f"Sincronização concluída para {client_name}",
                  {"campaigns_processed": len(campaigns), "insights_processed": total_insights})
-        
+
         print(f"   OK: Cliente {client_name} processado: {total_insights} metricas")
-        
+
     except Exception as e:
         error_msg = f"Erro ao sincronizar cliente {client_name}: {str(e)}"
         print(f"   ERRO: {error_msg}")
         log_error(client_id, "sync_meta_metrics", "error", error_msg,
                  {"ad_account_id": ad_account_id})
+
+    # ----------------------------------------------------------------
+    # ACCOUNT-LEVEL TOTALS + FUNDING (deduplicated reach 7d/30d, saldo prepago, status)
+    # Roda mesmo se o loop de campanhas acima levantou — last_sync_at sempre reflete a tentativa.
+    # ----------------------------------------------------------------
+    update_data = {'last_sync_at': datetime.now().isoformat()}
+
+    for preset, suffix in (('last_30d', '30d'), ('last_7d', '7d')):
+        try:
+            resp = requests.get(
+                f"{META_BASE_URL}/{ad_account_id}/insights",
+                params={
+                    'access_token': META_ACCESS_TOKEN,
+                    'level': 'account',
+                    'date_preset': preset,
+                    'fields': 'reach,impressions,spend',
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                rows = resp.json().get('data', [])
+                if rows:
+                    row = rows[0]
+                    update_data[f'account_reach_{suffix}'] = int(row.get('reach', 0))
+                    update_data[f'account_impressions_{suffix}'] = int(row.get('impressions', 0))
+                    update_data[f'account_spend_{suffix}'] = float(row.get('spend', 0))
+                    print(f"      [CONTA {suffix}] Reach: {row.get('reach')} | Impr: {row.get('impressions')} | Spend: {row.get('spend')}")
+        except Exception as e_acc:
+            print(f"      ERRO Account Insights ({preset}): {e_acc}")
+
+    # Funding info (saldo prepago, status, total gasto vida) — campos da conta, não dos insights
+    try:
+        resp = requests.get(
+            f"{META_BASE_URL}/{ad_account_id}",
+            params={
+                'access_token': META_ACCESS_TOKEN,
+                'fields': 'name,balance,currency,account_status,amount_spent,spend_cap,funding_source_details',
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            acc = resp.json()
+            update_data['account_currency'] = acc.get('currency') or 'BRL'
+            update_data['account_status'] = int(acc.get('account_status') or 0)
+            # Meta retorna amount_spent e spend_cap em centavos
+            update_data['account_amount_spent'] = float(acc.get('amount_spent') or 0) / 100
+            update_data['account_spend_cap'] = float(acc.get('spend_cap') or 0) / 100
+
+            # Saldo: preferir display_string (já em R$), fallback para balance/100
+            balance = 0.0
+            funding = acc.get('funding_source_details') or {}
+            display = funding.get('display_string') or ''
+            if display:
+                update_data['account_funding_display'] = display
+                m = re.search(r'R\$\s*([\d.,]+)', display)
+                if m:
+                    raw = m.group(1).replace('.', '').replace(',', '.')
+                    try:
+                        balance = float(raw)
+                    except ValueError:
+                        pass
+            if not balance and acc.get('balance'):
+                balance = float(acc['balance']) / 100
+            update_data['account_balance'] = balance
+
+            # Tipo de funding: type=1 normalmente é prepago
+            f_type = funding.get('type')
+            if f_type == 1:
+                update_data['account_funding_type'] = 'prepaid'
+            elif f_type:
+                update_data['account_funding_type'] = 'postpaid'
+
+            print(f"      [SALDO] {display or f'R$ {balance:.2f}'} | status={update_data['account_status']} | type={update_data.get('account_funding_type','?')}")
+    except Exception as e_fund:
+        print(f"      ERRO Funding: {e_fund}")
+
+    try:
+        supabase.table('clients').update(update_data).eq('id', client_id).execute()
+    except Exception as ex_db:
+        # Fallback: tenta gravar só o que existe garantido (last_sync_at + 30d)
+        print(f"      AVISO DB: Falha ao gravar tudo ({ex_db}). Tentando fallback mínimo...")
+        safe = {k: v for k, v in update_data.items() if k in ('last_sync_at', 'account_reach_30d', 'account_impressions_30d', 'account_spend_30d')}
+        try:
+            supabase.table('clients').update(safe).eq('id', client_id).execute()
+        except Exception as ex_db2:
+            print(f"      AVISO DB: Fallback também falhou: {ex_db2}")
 
 
 import argparse
