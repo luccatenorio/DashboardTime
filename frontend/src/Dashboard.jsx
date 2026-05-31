@@ -25,6 +25,7 @@ const Dashboard = () => {
     const [creating, setCreating] = useState(false)
     const [createdLink, setCreatedLink] = useState(null)
     const [copiedId, setCopiedId] = useState(null)
+    const [showOnlyActive, setShowOnlyActive] = useState(false)
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -396,7 +397,11 @@ const Dashboard = () => {
             const id = curr.campaign_id || curr.campaign_name
             const name = curr.campaign_name || 'Desconhecida'
             if (!acc[id]) {
-                acc[id] = { id, name, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
+                acc[id] = { id, name, status: curr.campaign_status || null, statusDate: curr.data_referencia, investimento: 0, leads: 0, engagement: 0, clicks: 0, impressions: 0 }
+            } else if (curr.campaign_status && curr.data_referencia >= acc[id].statusDate) {
+                // Pega o status do registro mais recente (status mais atual da campanha)
+                acc[id].status = curr.campaign_status
+                acc[id].statusDate = curr.data_referencia
             }
 
             const val = Number(curr.resultado_valor) || 0
@@ -788,43 +793,78 @@ const Dashboard = () => {
             </div>
 
             {/* Campaign Breakdown */}
-            {campaignData && campaignData.length > 0 && (
-                <div className="glass-panel" style={{ marginBottom: 32, padding: 28 }}>
-                    <div className="section-title">Resultados por Campanha <Activity size={18} color="var(--text-secondary)" /></div>
-                    <div className="table-container">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Campanha</th>
-                                    <th>Investimento</th>
-                                    <th>Resultados</th>
-                                    <th>Custo por Result.</th>
-                                    <th>CTR</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {campaignData.map((c, i) => (
-                                    <tr key={i}>
-                                        <td style={{ maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
-                                        <td>{formatCurrency(c.investimento)}</td>
-                                        <td>
-                                            <span style={{
-                                                background: c.leads > 0 ? 'rgba(249, 115, 22, 0.1)' : 'transparent',
-                                                color: c.leads > 0 ? '#f97316' : 'var(--text-primary)',
-                                                padding: '4px 8px',
-                                                borderRadius: '4px',
-                                                fontWeight: c.leads > 0 ? '600' : '500'
-                                            }}>{c.leads}</span>
-                                        </td>
-                                        <td>{formatCurrency(c.cpl)}</td>
-                                        <td>{formatPercent(c.ctr)}</td>
+            {campaignData && campaignData.length > 0 && (() => {
+                const displayedCampaigns = showOnlyActive ? campaignData.filter(c => c.status === 'ACTIVE') : campaignData
+                const activeCount = campaignData.filter(c => c.status === 'ACTIVE').length
+                const statusStyle = (status) => {
+                    if (status === 'ACTIVE') return { bg: 'rgba(16, 185, 129, 0.15)', color: '#10b981', label: 'Ativa' }
+                    if (status === 'PAUSED') return { bg: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b', label: 'Pausada' }
+                    if (status === 'ARCHIVED' || status === 'DELETED') return { bg: 'rgba(113, 113, 122, 0.15)', color: '#71717a', label: status === 'DELETED' ? 'Excluída' : 'Arquivada' }
+                    return { bg: 'transparent', color: 'var(--text-secondary)', label: '—' }
+                }
+                return (
+                    <div className="glass-panel" style={{ marginBottom: 32, padding: 28 }}>
+                        <div className="section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                Resultados por Campanha <Activity size={18} color="var(--text-secondary)" />
+                            </span>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: '400', textTransform: 'none', letterSpacing: 0 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={showOnlyActive}
+                                    onChange={(e) => setShowOnlyActive(e.target.checked)}
+                                    style={{ accentColor: '#10b981', cursor: 'pointer' }}
+                                />
+                                Só ativas ({activeCount}/{campaignData.length})
+                            </label>
+                        </div>
+                        <div className="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Campanha</th>
+                                        <th>Status</th>
+                                        <th>Investimento</th>
+                                        <th>Resultados</th>
+                                        <th>Custo por Result.</th>
+                                        <th>CTR</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    {displayedCampaigns.map((c, i) => {
+                                        const s = statusStyle(c.status)
+                                        return (
+                                            <tr key={i} style={{ opacity: c.status && c.status !== 'ACTIVE' ? 0.7 : 1 }}>
+                                                <td style={{ maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
+                                                <td>
+                                                    <span style={{
+                                                        background: s.bg, color: s.color,
+                                                        padding: '3px 10px', borderRadius: '12px',
+                                                        fontSize: '0.75rem', fontWeight: '600',
+                                                        display: 'inline-block', whiteSpace: 'nowrap'
+                                                    }}>{s.label}</span>
+                                                </td>
+                                                <td>{formatCurrency(c.investimento)}</td>
+                                                <td>
+                                                    <span style={{
+                                                        background: c.leads > 0 ? 'rgba(249, 115, 22, 0.1)' : 'transparent',
+                                                        color: c.leads > 0 ? '#f97316' : 'var(--text-primary)',
+                                                        padding: '4px 8px',
+                                                        borderRadius: '4px',
+                                                        fontWeight: c.leads > 0 ? '600' : '500'
+                                                    }}>{c.leads}</span>
+                                                </td>
+                                                <td>{formatCurrency(c.cpl)}</td>
+                                                <td>{formatPercent(c.ctr)}</td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            })()}
 
             {/* Bottom Section */}
             <div className="bottom-grid">

@@ -270,6 +270,7 @@ def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):
                         "client_id": client_id,
                         "campaign_id": campaign_id,
                         "campaign_name": campaign_name,
+                        "campaign_status": campaign_status,
                         "data_referencia": date_str,
                         "investimento": float(insight.get('spend', 0)) if insight.get('spend') else 0.0,
                         "impressoes": int(insight.get('impressions', 0)) if insight.get('impressions') else 0,
