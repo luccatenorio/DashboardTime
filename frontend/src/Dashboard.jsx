@@ -31,6 +31,8 @@ const Dashboard = () => {
     const [sendingFeedback, setSendingFeedback] = useState(null) // 'all' | client_id | null
     const [feedbackResult, setFeedbackResult] = useState(null)
     const [editingGroup, setEditingGroup] = useState(false)
+    const [confirmModal, setConfirmModal] = useState(null) // { title, message, onConfirm, dontAskKey }
+    const [dontAskAgain, setDontAskAgain] = useState(false)
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -260,10 +262,9 @@ const Dashboard = () => {
         }
     }
 
-    const triggerFeedback = async (payload, label) => {
+    const doSendFeedback = async (payload) => {
         const url = N8N_SEND_FEEDBACK
         if (!url) { alert('Webhook de feedback não configurado'); return }
-        if (!confirm(`Disparar mensagem de feedback ${label}? Isso vai enviar mensagens WhatsApp reais.`)) return
         setSendingFeedback(payload.all ? 'all' : payload.client_id)
         setFeedbackResult(null)
         try {
@@ -280,6 +281,20 @@ const Dashboard = () => {
             setSendingFeedback(null)
             setTimeout(() => setFeedbackResult(null), 6000)
         }
+    }
+
+    const triggerFeedback = async (payload, label) => {
+        const dontAskKey = payload.all ? 'skip_confirm_feedback_all' : 'skip_confirm_feedback_individual'
+        if (localStorage.getItem(dontAskKey) === '1') {
+            return doSendFeedback(payload)
+        }
+        setDontAskAgain(false)
+        setConfirmModal({
+            title: 'Confirmar disparo',
+            message: `Disparar mensagem de feedback ${label}? Isso vai enviar mensagens WhatsApp reais.`,
+            dontAskKey,
+            payload
+        })
     }
 
     // Admin: Function to load metrics when a client is clicked
@@ -584,6 +599,68 @@ const Dashboard = () => {
         )
     }
 
+    const confirmDialog = confirmModal && (
+        <div
+            onClick={() => setConfirmModal(null)}
+            style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+                backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center',
+                justifyContent: 'center', zIndex: 9999, padding: '20px'
+            }}
+        >
+            <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                    background: 'linear-gradient(180deg, #18181c, #0f0f12)',
+                    border: '1px solid #2a2a30', borderRadius: '12px',
+                    padding: '28px', maxWidth: '440px', width: '100%',
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+                }}
+            >
+                <h3 style={{ margin: '0 0 12px 0', color: '#fff', fontSize: '1.15rem', fontWeight: '600' }}>
+                    {confirmModal.title}
+                </h3>
+                <p style={{ margin: '0 0 20px 0', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
+                    {confirmModal.message}
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    <input
+                        type="checkbox"
+                        checked={dontAskAgain}
+                        onChange={(e) => setDontAskAgain(e.target.checked)}
+                        style={{ accentColor: '#25D366', cursor: 'pointer' }}
+                    />
+                    Não perguntar de novo
+                </label>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <button
+                        onClick={() => setConfirmModal(null)}
+                        style={{
+                            background: 'transparent', color: 'var(--text-secondary)',
+                            border: '1px solid #2a2a30', padding: '10px 20px',
+                            borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem'
+                        }}
+                    >Cancelar</button>
+                    <button
+                        onClick={() => {
+                            if (dontAskAgain && confirmModal.dontAskKey) {
+                                localStorage.setItem(confirmModal.dontAskKey, '1')
+                            }
+                            const p = confirmModal.payload
+                            setConfirmModal(null)
+                            doSendFeedback(p)
+                        }}
+                        style={{
+                            background: '#25D366', color: '#fff', border: 'none',
+                            padding: '10px 20px', borderRadius: '6px', cursor: 'pointer',
+                            fontSize: '0.9rem', fontWeight: '600'
+                        }}
+                    >Confirmar e enviar</button>
+                </div>
+            </div>
+        </div>
+    )
+
     if (errorObj) return (
         <div style={{ padding: 40, background: '#0a0a0a', minHeight: '100vh', color: '#fff' }}>
             <h2 style={{ color: '#ff4444' }}>Erro ao carregar dados</h2>
@@ -597,6 +674,7 @@ const Dashboard = () => {
     if (isAdmin && !selectedClient) {
         return (
             <div className="dashboard-container animate-fade-in">
+                {confirmDialog}
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '12px' }}>
@@ -764,6 +842,7 @@ const Dashboard = () => {
 
     return (
         <div className="dashboard-container animate-fade-in">
+            {confirmDialog}
             <Header />
 
             {isAdmin && clientDetails && (
