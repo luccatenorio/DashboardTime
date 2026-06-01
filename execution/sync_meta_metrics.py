@@ -169,47 +169,62 @@ def get_campaign_insights(campaign_id: str, since_date: Optional[str] = None, un
     return insights
 
 
+CADASTRO_KEYS = ['lead', 'leads', 'onsite_conversion.lead_grouped',
+                 'offsite_conversion.fb_pixel_lead', 'submit_application']
+MENSAGEM_KEYS = ['onsite_conversion.messaging_conversation_started_7d',
+                 'onsite_conversion.messaging_conversation_started_1d',
+                 'omnichannel_messaging_conversation_started_7d',
+                 'omnichannel_messaging_conversation_started',
+                 'onsite_conversion.messaging_first_reply']
+COMPRA_KEYS = ['purchase', 'offsite_conversion.fb_pixel_purchase',
+               'onsite_conversion.purchase']
+CONTATO_KEYS = ['contact', 'schedule']
+
+
 def process_actions(actions: List[Dict], objective: str = None, campaign_name: str = "", insight_data: Dict = None) -> tuple:
     """
     Processa array de ações e retorna (resultado_valor, resultado_nome).
 
-    Regra de negócio Trime: 1 cadastro = 1 lead, 1 conversa iniciada = 1 lead.
-    Quando a mesma campanha tem cadastro + mensagem no mesmo dia, SOMAR os dois.
-    Não somar tipos duplicados (ex: messaging_started_7d e _1d são overlapping —
-    pega um único representante por categoria).
+    Espelha a coluna "Resultados" do Meta Ads Manager: para CADA campanha,
+    conta APENAS o evento do optimization goal dela (não soma eventos colaterais).
+    Ex: campanha OUTCOME_LEADS com 280 leads + 13 conversas paralelas → conta só 280.
+    A soma "cadastro + mensagem" continua acontecendo na AGREGAÇÃO entre campanhas
+    no dashboard, não dentro da mesma campanha.
     """
     if not actions:
         return (0.0, None)
 
     action_map = {a.get('action_type'): float(a.get('value', 0)) for a in actions}
+    obj = (objective or '').upper()
 
-    # Cada tupla = uma categoria comercial. Pega o PRIMEIRO key com valor > 0
-    # de cada categoria (evita duplicar attribution windows do mesmo evento).
-    categories = [
-        ('cadastro', ['lead', 'leads', 'onsite_conversion.lead_grouped',
-                      'offsite_conversion.fb_pixel_lead', 'submit_application']),
-        ('mensagem', ['onsite_conversion.messaging_conversation_started_7d',
-                      'onsite_conversion.messaging_conversation_started_1d',
-                      'omnichannel_messaging_conversation_started_7d',
-                      'omnichannel_messaging_conversation_started',
-                      'onsite_conversion.messaging_first_reply']),
-        ('contato', ['contact', 'schedule']),
-        ('compra', ['purchase']),
-    ]
-
-    total = 0.0
-    nomes = []
-    for _, keys in categories:
+    def first_nonzero(keys):
         for k in keys:
             v = action_map.get(k, 0)
             if v > 0:
-                total += v
-                nomes.append(k)
-                break  # próxima categoria — não soma janelas do mesmo evento
+                return (v, k)
+        return None
 
-    if total <= 0:
+    # Ordem de prioridade por objective (espelha Meta UI)
+    if obj in ('OUTCOME_LEADS', 'LEAD_GENERATION', 'LEADS'):
+        priority = [CADASTRO_KEYS, MENSAGEM_KEYS, CONTATO_KEYS, COMPRA_KEYS]
+    elif obj in ('OUTCOME_SALES', 'CONVERSIONS', 'PRODUCT_CATALOG_SALES'):
+        priority = [COMPRA_KEYS, CADASTRO_KEYS, MENSAGEM_KEYS, CONTATO_KEYS]
+    elif obj in ('OUTCOME_ENGAGEMENT', 'MESSAGES', 'ENGAGEMENT'):
+        priority = [MENSAGEM_KEYS, CADASTRO_KEYS, CONTATO_KEYS, COMPRA_KEYS]
+    elif obj in ('OUTCOME_AWARENESS', 'BRAND_AWARENESS', 'REACH',
+                 'OUTCOME_TRAFFIC', 'LINK_CLICKS', 'VIDEO_VIEWS', 'OUTCOME_APP_PROMOTION'):
+        # Objetivos que não têm "resultado comercial" — não polui o painel de Leads.
         return (0.0, None)
-    return (total, ','.join(nomes))
+    else:
+        # Objective desconhecido: tenta cadastro primeiro como fallback seguro
+        priority = [CADASTRO_KEYS, MENSAGEM_KEYS, CONTATO_KEYS, COMPRA_KEYS]
+
+    # Pega o PRIMEIRO match (não soma) — espelha Meta UI por campanha
+    for keys in priority:
+        hit = first_nonzero(keys)
+        if hit:
+            return hit
+    return (0.0, None)
 
 
 def sync_client_metrics(client_id: str, client_name: str, ad_account_id: str):

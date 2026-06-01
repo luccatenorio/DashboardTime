@@ -26,6 +26,10 @@ const Dashboard = () => {
     const [createdLink, setCreatedLink] = useState(null)
     const [copiedId, setCopiedId] = useState(null)
     const [showOnlyActive, setShowOnlyActive] = useState(false)
+    const [waGroups, setWaGroups] = useState(null) // null = nao carregado, [] = vazio
+    const [loadingGroups, setLoadingGroups] = useState(false)
+    const [sendingFeedback, setSendingFeedback] = useState(null) // 'all' | client_id | null
+    const [feedbackResult, setFeedbackResult] = useState(null)
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -214,6 +218,60 @@ const Dashboard = () => {
             alert('Erro ao criar cliente: ' + (e.message || e))
         } finally {
             setCreating(false)
+        }
+    }
+
+    const loadWhatsAppGroups = async () => {
+        if (waGroups || loadingGroups) return
+        const url = import.meta.env.VITE_N8N_LIST_GROUPS
+        if (!url) { setWaGroups([]); return }
+        setLoadingGroups(true)
+        try {
+            const r = await fetch(url)
+            const data = await r.json()
+            setWaGroups(Array.isArray(data?.groups) ? data.groups : [])
+        } catch (e) {
+            console.error('list groups failed', e)
+            setWaGroups([])
+        } finally {
+            setLoadingGroups(false)
+        }
+    }
+
+    const saveClientGroup = async (clientId, jid, name) => {
+        try {
+            await supabase.from('clients').update({
+                whatsapp_group_jid: jid || null,
+                whatsapp_group_name: name || null
+            }).eq('id', clientId)
+            setClients(prev => prev.map(c => c.id === clientId ? { ...c, whatsapp_group_jid: jid, whatsapp_group_name: name } : c))
+            if (clientDetails && clientDetails.id === clientId) {
+                setClientDetails(prev => ({ ...prev, whatsapp_group_jid: jid, whatsapp_group_name: name }))
+            }
+        } catch (e) {
+            alert('Erro ao salvar grupo: ' + (e.message || e))
+        }
+    }
+
+    const triggerFeedback = async (payload, label) => {
+        const url = import.meta.env.VITE_N8N_SEND_FEEDBACK
+        if (!url) { alert('Webhook de feedback não configurado'); return }
+        if (!confirm(`Disparar mensagem de feedback ${label}? Isso vai enviar mensagens WhatsApp reais.`)) return
+        setSendingFeedback(payload.all ? 'all' : payload.client_id)
+        setFeedbackResult(null)
+        try {
+            const r = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            const txt = await r.text()
+            setFeedbackResult({ ok: r.ok, status: r.status, body: txt.slice(0, 300) })
+        } catch (e) {
+            setFeedbackResult({ ok: false, status: 0, body: String(e) })
+        } finally {
+            setSendingFeedback(null)
+            setTimeout(() => setFeedbackResult(null), 6000)
         }
     }
 
@@ -534,22 +592,52 @@ const Dashboard = () => {
             <div className="dashboard-container animate-fade-in">
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '12px' }}>
                         <h2 style={{ color: 'var(--text-primary)', margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
                             Clientes ({clients.length})
                         </h2>
-                        <button
-                            onClick={() => { setShowCreateForm(true); setCreatedLink(null); }}
-                            style={{
-                                background: 'linear-gradient(135deg, #3b82f6, #6366f1)',
-                                color: '#fff', border: 'none', padding: '10px 20px',
-                                borderRadius: '8px', fontWeight: '600', cursor: 'pointer',
-                                fontSize: '0.9rem', boxShadow: '0 4px 12px rgba(59,130,246,0.3)'
-                            }}
-                        >
-                            + Novo cliente
-                        </button>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {(() => {
+                                const withGroup = clients.filter(c => c.whatsapp_group_jid).length
+                                return (
+                                    <button
+                                        onClick={() => triggerFeedback({ all: true }, `para TODOS os ${withGroup} clientes com grupo cadastrado`)}
+                                        disabled={sendingFeedback === 'all' || withGroup === 0}
+                                        title={withGroup === 0 ? 'Nenhum cliente tem grupo cadastrado ainda' : `Enviar feedback para ${withGroup} grupos`}
+                                        style={{
+                                            background: '#25D366', color: '#fff', border: 'none',
+                                            padding: '10px 18px', borderRadius: '8px', fontWeight: '600',
+                                            cursor: (sendingFeedback === 'all' || withGroup === 0) ? 'not-allowed' : 'pointer',
+                                            opacity: (sendingFeedback === 'all' || withGroup === 0) ? 0.5 : 1,
+                                            fontSize: '0.9rem'
+                                        }}
+                                    >
+                                        {sendingFeedback === 'all' ? 'Enviando…' : `Enviar feedback p/ todos (${withGroup})`}
+                                    </button>
+                                )
+                            })()}
+                            <button
+                                onClick={() => { setShowCreateForm(true); setCreatedLink(null); }}
+                                style={{
+                                    background: 'linear-gradient(135deg, #3b82f6, #6366f1)',
+                                    color: '#fff', border: 'none', padding: '10px 20px',
+                                    borderRadius: '8px', fontWeight: '600', cursor: 'pointer',
+                                    fontSize: '0.9rem', boxShadow: '0 4px 12px rgba(59,130,246,0.3)'
+                                }}
+                            >
+                                + Novo cliente
+                            </button>
+                        </div>
                     </div>
+
+                    {feedbackResult && (
+                        <div style={{ padding: '12px 16px', marginBottom: '20px', borderRadius: '6px',
+                            background: feedbackResult.ok ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                            border: `1px solid ${feedbackResult.ok ? '#10b981' : '#ef4444'}`,
+                            color: feedbackResult.ok ? '#10b981' : '#ef4444', fontSize: '0.85rem' }}>
+                            {feedbackResult.ok ? '✓ Disparado. Webhook recebeu o trigger; envios estão acontecendo no n8n com intervalo entre cada um.' : `✗ Erro ${feedbackResult.status}: ${feedbackResult.body}`}
+                        </div>
+                    )}
 
                     {showCreateForm && (
                         <div className="glass-panel" style={{ padding: '24px', marginBottom: '32px' }}>
@@ -670,6 +758,53 @@ const Dashboard = () => {
     return (
         <div className="dashboard-container animate-fade-in">
             <Header />
+
+            {isAdmin && clientDetails && (
+                <div className="glass-panel" style={{ padding: '14px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', borderLeft: '3px solid #25D366' }}>
+                    <div style={{ flex: '1 1 220px' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px' }}>Grupo WhatsApp</div>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <select
+                                value={clientDetails.whatsapp_group_jid || ''}
+                                onFocus={loadWhatsAppGroups}
+                                onChange={(e) => {
+                                    const jid = e.target.value
+                                    const g = (waGroups || []).find(x => x.jid === jid)
+                                    saveClientGroup(clientDetails.id, jid || null, g?.name || null)
+                                }}
+                                disabled={loadingGroups}
+                                style={{ flex: 1, minWidth: 0, background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', fontSize: '0.9rem' }}
+                            >
+                                <option value="">{loadingGroups ? 'Carregando grupos…' : (waGroups === null ? '— Clique para listar —' : (waGroups.length === 0 ? 'Nenhum grupo / webhook off' : 'Sem grupo'))}</option>
+                                {(waGroups || []).map(g => (
+                                    <option key={g.jid} value={g.jid}>{g.name}</option>
+                                ))}
+                            </select>
+                            {clientDetails.whatsapp_group_jid && (
+                                <button
+                                    onClick={() => saveClientGroup(clientDetails.id, null, null)}
+                                    title="Remover vínculo"
+                                    style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem' }}
+                                >✕</button>
+                            )}
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => triggerFeedback({ client_id: clientDetails.id }, `apenas para ${clientDetails.cliente}`)}
+                        disabled={!clientDetails.whatsapp_group_jid || sendingFeedback === clientDetails.id}
+                        title={!clientDetails.whatsapp_group_jid ? 'Selecione um grupo antes' : 'Disparar mensagem de feedback'}
+                        style={{
+                            background: '#25D366', color: '#fff', border: 'none',
+                            padding: '10px 18px', borderRadius: '6px', fontWeight: '600',
+                            cursor: (!clientDetails.whatsapp_group_jid || sendingFeedback === clientDetails.id) ? 'not-allowed' : 'pointer',
+                            opacity: (!clientDetails.whatsapp_group_jid || sendingFeedback === clientDetails.id) ? 0.5 : 1,
+                            fontSize: '0.9rem', alignSelf: 'flex-end'
+                        }}
+                    >
+                        {sendingFeedback === clientDetails.id ? 'Enviando…' : 'Enviar feedback'}
+                    </button>
+                </div>
+            )}
 
             {clientDetails && (clientDetails.account_balance > 0 || clientDetails.account_funding_display) && (() => {
                 const balance = Number(clientDetails.account_balance) || 0
