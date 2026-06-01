@@ -30,6 +30,7 @@ const Dashboard = () => {
     const [loadingGroups, setLoadingGroups] = useState(false)
     const [sendingFeedback, setSendingFeedback] = useState(null) // 'all' | client_id | null
     const [feedbackResult, setFeedbackResult] = useState(null)
+    const [editingGroup, setEditingGroup] = useState(false)
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -87,6 +88,7 @@ const Dashboard = () => {
 
                 if (clientsError) throw clientsError
                 setClients(clientsData || [])
+                loadWhatsAppGroups() // pre-carrega grupos pra dropdown ja vir populado
                 setLoading(false)
                 return // Stop here, wait for user to pick a client
             }
@@ -763,31 +765,58 @@ const Dashboard = () => {
                 <div className="glass-panel" style={{ padding: '14px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', borderLeft: '3px solid #25D366' }}>
                     <div style={{ flex: '1 1 220px' }}>
                         <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px' }}>Grupo WhatsApp</div>
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <select
-                                value={clientDetails.whatsapp_group_jid || ''}
-                                onFocus={loadWhatsAppGroups}
-                                onChange={(e) => {
-                                    const jid = e.target.value
-                                    const g = (waGroups || []).find(x => x.jid === jid)
-                                    saveClientGroup(clientDetails.id, jid || null, g?.name || null)
-                                }}
-                                disabled={loadingGroups}
-                                style={{ flex: 1, minWidth: 0, background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', fontSize: '0.9rem' }}
-                            >
-                                <option value="">{loadingGroups ? 'Carregando grupos…' : (waGroups === null ? '— Clique para listar —' : (waGroups.length === 0 ? 'Nenhum grupo / webhook off' : 'Sem grupo'))}</option>
-                                {(waGroups || []).map(g => (
-                                    <option key={g.jid} value={g.jid}>{g.name}</option>
-                                ))}
-                            </select>
-                            {clientDetails.whatsapp_group_jid && (
+                        {editingGroup ? (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <select
+                                    autoFocus
+                                    value={clientDetails.whatsapp_group_jid || ''}
+                                    onFocus={loadWhatsAppGroups}
+                                    onChange={(e) => {
+                                        const jid = e.target.value
+                                        const g = (waGroups || []).find(x => x.jid === jid)
+                                        saveClientGroup(clientDetails.id, jid || null, g?.name || (jid ? clientDetails.whatsapp_group_name : null))
+                                        setEditingGroup(false)
+                                    }}
+                                    onBlur={() => setEditingGroup(false)}
+                                    disabled={loadingGroups}
+                                    style={{ flex: 1, minWidth: 0, background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', fontSize: '0.9rem' }}
+                                >
+                                    <option value="">Sem grupo vinculado</option>
+                                    {clientDetails.whatsapp_group_jid && !(waGroups || []).some(g => g.jid === clientDetails.whatsapp_group_jid) && (
+                                        <option value={clientDetails.whatsapp_group_jid}>
+                                            {clientDetails.whatsapp_group_name || clientDetails.whatsapp_group_jid}
+                                            {loadingGroups ? ' (carregando lista…)' : ''}
+                                        </option>
+                                    )}
+                                    {(waGroups || []).map(g => (
+                                        <option key={g.jid} value={g.jid}>{g.name}</option>
+                                    ))}
+                                </select>
                                 <button
-                                    onClick={() => saveClientGroup(clientDetails.id, null, null)}
-                                    title="Remover vínculo"
+                                    onClick={() => setEditingGroup(false)}
+                                    title="Cancelar"
                                     style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem' }}
                                 >✕</button>
-                            )}
-                        </div>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <div style={{
+                                    flex: 1, minWidth: 0, padding: '8px 12px',
+                                    background: '#0f0f12', border: '1px solid #2a2a30',
+                                    borderRadius: '6px', color: clientDetails.whatsapp_group_name ? '#fff' : 'var(--text-secondary)',
+                                    fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                                }} title={clientDetails.whatsapp_group_name || ''}>
+                                    {clientDetails.whatsapp_group_name || '— Sem grupo vinculado —'}
+                                </div>
+                                <button
+                                    onClick={() => { loadWhatsAppGroups(); setEditingGroup(true) }}
+                                    title="Trocar grupo"
+                                    style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '8px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem' }}
+                                >
+                                    Trocar
+                                </button>
+                            </div>
+                        )}
                     </div>
                     <button
                         onClick={() => triggerFeedback({ client_id: clientDetails.id }, `apenas para ${clientDetails.cliente}`)}
