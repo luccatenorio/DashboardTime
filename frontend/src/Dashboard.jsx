@@ -197,7 +197,7 @@ const Dashboard = () => {
             const link = `${window.location.origin}/#/c/${hash}`
             setCreatedLink(link)
 
-            const webhookUrl = import.meta.env.VITE_N8N_SYNC_WEBHOOK
+            const webhookUrl = N8N_SYNC_WEBHOOK
             if (webhookUrl) {
                 fetch(webhookUrl, {
                     method: 'POST',
@@ -223,9 +223,14 @@ const Dashboard = () => {
         }
     }
 
+    const N8N_BASE = 'https://n8n-n8n.ixzefo.easypanel.host/webhook'
+    const N8N_LIST_GROUPS  = import.meta.env.VITE_N8N_LIST_GROUPS  || `${N8N_BASE}/trime-list-groups`
+    const N8N_SEND_FEEDBACK = import.meta.env.VITE_N8N_SEND_FEEDBACK || `${N8N_BASE}/trime-send-feedback`
+    const N8N_SYNC_WEBHOOK  = import.meta.env.VITE_N8N_SYNC_WEBHOOK  || `${N8N_BASE}/trime-sync-client`
+
     const loadWhatsAppGroups = async () => {
         if (waGroups || loadingGroups) return
-        const url = import.meta.env.VITE_N8N_LIST_GROUPS
+        const url = N8N_LIST_GROUPS
         if (!url) { setWaGroups([]); return }
         setLoadingGroups(true)
         try {
@@ -256,7 +261,7 @@ const Dashboard = () => {
     }
 
     const triggerFeedback = async (payload, label) => {
-        const url = import.meta.env.VITE_N8N_SEND_FEEDBACK
+        const url = N8N_SEND_FEEDBACK
         if (!url) { alert('Webhook de feedback não configurado'); return }
         if (!confirm(`Disparar mensagem de feedback ${label}? Isso vai enviar mensagens WhatsApp reais.`)) return
         setSendingFeedback(payload.all ? 'all' : payload.client_id)
