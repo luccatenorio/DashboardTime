@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from './lib/supabase'
 import {
     BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart
@@ -599,66 +600,70 @@ const Dashboard = () => {
         )
     }
 
-    const confirmDialog = confirmModal && (
-        <div
-            onClick={() => setConfirmModal(null)}
-            style={{
-                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
-                backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', zIndex: 9999, padding: '20px'
-            }}
-        >
+    const confirmDialog = confirmModal && createPortal(
+        (
             <div
-                onClick={(e) => e.stopPropagation()}
+                onClick={() => setConfirmModal(null)}
                 style={{
-                    background: 'linear-gradient(180deg, #18181c, #0f0f12)',
-                    border: '1px solid #2a2a30', borderRadius: '12px',
-                    padding: '28px', maxWidth: '440px', width: '100%',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    zIndex: 100000, padding: '20px'
                 }}
             >
-                <h3 style={{ margin: '0 0 12px 0', color: '#fff', fontSize: '1.15rem', fontWeight: '600' }}>
-                    {confirmModal.title}
-                </h3>
-                <p style={{ margin: '0 0 20px 0', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
-                    {confirmModal.message}
-                </p>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    <input
-                        type="checkbox"
-                        checked={dontAskAgain}
-                        onChange={(e) => setDontAskAgain(e.target.checked)}
-                        style={{ accentColor: '#25D366', cursor: 'pointer' }}
-                    />
-                    Não perguntar de novo
-                </label>
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                    <button
-                        onClick={() => setConfirmModal(null)}
-                        style={{
-                            background: 'transparent', color: 'var(--text-secondary)',
-                            border: '1px solid #2a2a30', padding: '10px 20px',
-                            borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem'
-                        }}
-                    >Cancelar</button>
-                    <button
-                        onClick={() => {
-                            if (dontAskAgain && confirmModal.dontAskKey) {
-                                localStorage.setItem(confirmModal.dontAskKey, '1')
-                            }
-                            const p = confirmModal.payload
-                            setConfirmModal(null)
-                            doSendFeedback(p)
-                        }}
-                        style={{
-                            background: '#25D366', color: '#fff', border: 'none',
-                            padding: '10px 20px', borderRadius: '6px', cursor: 'pointer',
-                            fontSize: '0.9rem', fontWeight: '600'
-                        }}
-                    >Confirmar e enviar</button>
+                <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                        background: 'linear-gradient(180deg, #18181c, #0f0f12)',
+                        border: '1px solid #2a2a30', borderRadius: '12px',
+                        padding: '28px', maxWidth: '440px', width: '100%',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+                    }}
+                >
+                    <h3 style={{ margin: '0 0 12px 0', color: '#fff', fontSize: '1.15rem', fontWeight: '600' }}>
+                        {confirmModal.title}
+                    </h3>
+                    <p style={{ margin: '0 0 20px 0', color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
+                        {confirmModal.message}
+                    </p>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        <input
+                            type="checkbox"
+                            checked={dontAskAgain}
+                            onChange={(e) => setDontAskAgain(e.target.checked)}
+                            style={{ accentColor: '#25D366', cursor: 'pointer' }}
+                        />
+                        Não perguntar de novo
+                    </label>
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                        <button
+                            onClick={() => setConfirmModal(null)}
+                            style={{
+                                background: 'transparent', color: 'var(--text-secondary)',
+                                border: '1px solid #2a2a30', padding: '10px 20px',
+                                borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem'
+                            }}
+                        >Cancelar</button>
+                        <button
+                            onClick={() => {
+                                if (dontAskAgain && confirmModal.dontAskKey) {
+                                    localStorage.setItem(confirmModal.dontAskKey, '1')
+                                }
+                                const p = confirmModal.payload
+                                setConfirmModal(null)
+                                doSendFeedback(p)
+                            }}
+                            style={{
+                                background: '#25D366', color: '#fff', border: 'none',
+                                padding: '10px 20px', borderRadius: '6px', cursor: 'pointer',
+                                fontSize: '0.9rem', fontWeight: '600'
+                            }}
+                        >Confirmar e enviar</button>
+                    </div>
                 </div>
             </div>
-        </div>
+        ),
+        document.body
     )
 
     if (errorObj) return (
