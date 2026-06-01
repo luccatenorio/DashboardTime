@@ -263,6 +263,43 @@ const Dashboard = () => {
         }
     }
 
+    const saveGreetingName = async (clientId, greeting) => {
+        const value = (greeting || '').trim() || null
+        try {
+            await supabase.from('clients').update({ greeting_name: value }).eq('id', clientId)
+            setClients(prev => prev.map(c => c.id === clientId ? { ...c, greeting_name: value } : c))
+            if (clientDetails && clientDetails.id === clientId) {
+                setClientDetails(prev => ({ ...prev, greeting_name: value }))
+            }
+        } catch (e) {
+            alert('Erro ao salvar saudação: ' + (e.message || e))
+        }
+    }
+
+    const saveGreetingTone = async (clientId, tone) => {
+        const client = clients.find(c => c.id === clientId) || clientDetails
+        const updates = { greeting_tone: tone }
+        // Singular: pre-preenche com o primeiro nome do cliente se ainda nao tem saudacao customizada
+        if (tone === 'singular' && !(client?.greeting_name || '').trim()) {
+            const firstName = (client?.cliente || '').trim().split(/\s+/)[0]
+            if (firstName) updates.greeting_name = firstName
+        } else if (tone === 'plural') {
+            // Plural: deixa "pessoal" preenchido (user pode trocar para "time", "amigos", etc)
+            if (!(client?.greeting_name || '').trim() || client?.greeting_tone === 'singular') {
+                updates.greeting_name = 'pessoal'
+            }
+        }
+        try {
+            await supabase.from('clients').update(updates).eq('id', clientId)
+            setClients(prev => prev.map(c => c.id === clientId ? { ...c, ...updates } : c))
+            if (clientDetails && clientDetails.id === clientId) {
+                setClientDetails(prev => ({ ...prev, ...updates }))
+            }
+        } catch (e) {
+            alert('Erro ao salvar tom: ' + (e.message || e))
+        }
+    }
+
     const doSendFeedback = async (payload) => {
         const url = N8N_SEND_FEEDBACK
         if (!url) { alert('Webhook de feedback não configurado'); return }
@@ -906,6 +943,46 @@ const Dashboard = () => {
                                 </button>
                             </div>
                         )}
+                    </div>
+                    <div style={{ flex: '0 1 260px' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px' }}>
+                            Tom da mensagem
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', background: '#0f0f12', border: '1px solid #2a2a30', borderRadius: '6px', overflow: 'hidden' }}>
+                                {['plural', 'singular'].map(t => {
+                                    const active = (clientDetails.greeting_tone || 'plural') === t
+                                    return (
+                                        <button
+                                            key={t}
+                                            onClick={() => saveGreetingTone(clientDetails.id, t)}
+                                            style={{
+                                                background: active ? '#25D366' : 'transparent',
+                                                color: active ? '#fff' : 'var(--text-secondary)',
+                                                border: 'none', padding: '8px 12px',
+                                                cursor: 'pointer', fontSize: '0.78rem',
+                                                fontWeight: active ? 600 : 400,
+                                                textTransform: 'capitalize'
+                                            }}
+                                        >{t}</button>
+                                    )
+                                })}
+                            </div>
+                            <input
+                                type="text"
+                                placeholder={clientDetails.greeting_tone === 'singular' ? 'Nome' : 'pessoal'}
+                                defaultValue={clientDetails.greeting_name || ''}
+                                key={clientDetails.id + '_' + (clientDetails.greeting_name || '')}
+                                onBlur={(e) => {
+                                    const v = e.target.value.trim()
+                                    if (v !== (clientDetails.greeting_name || '')) {
+                                        saveGreetingName(clientDetails.id, v)
+                                    }
+                                }}
+                                title={`Vai virar: "Olá, ${clientDetails.greeting_name || (clientDetails.greeting_tone === 'singular' ? 'amigo' : 'pessoal')}!"`}
+                                style={{ flex: 1, minWidth: 0, background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '8px 10px', borderRadius: '6px', fontSize: '0.9rem' }}
+                            />
+                        </div>
                     </div>
                     <button
                         onClick={() => triggerFeedback({ client_id: clientDetails.id }, `apenas para ${clientDetails.cliente}`)}
