@@ -32,6 +32,7 @@ const Dashboard = () => {
     const [sendingFeedback, setSendingFeedback] = useState(null) // 'all' | client_id | null
     const [feedbackResult, setFeedbackResult] = useState(null)
     const [editingGroup, setEditingGroup] = useState(false)
+    const [clientSort, setClientSort] = useState('name') // 'name' | 'balance_asc'
     const [confirmModal, setConfirmModal] = useState(null) // { title, message, onConfirm, dontAskKey }
     const [dontAskAgain, setDontAskAgain] = useState(false)
 
@@ -278,17 +279,15 @@ const Dashboard = () => {
 
     const saveGreetingTone = async (clientId, tone) => {
         const client = clients.find(c => c.id === clientId) || clientDetails
-        const updates = { greeting_tone: tone }
-        // Singular: pre-preenche com o primeiro nome do cliente se ainda nao tem saudacao customizada
-        if (tone === 'singular' && !(client?.greeting_name || '').trim()) {
+        // Toda vez que troca o tom, redefine a saudacao pro padrao daquele tom.
+        // Singular -> primeiro nome do cliente | Plural -> "pessoal"
+        // Depois disso o user pode editar manualmente no input se quiser customizar.
+        let defaultGreeting = 'pessoal'
+        if (tone === 'singular') {
             const firstName = (client?.cliente || '').trim().split(/\s+/)[0]
-            if (firstName) updates.greeting_name = firstName
-        } else if (tone === 'plural') {
-            // Plural: deixa "pessoal" preenchido (user pode trocar para "time", "amigos", etc)
-            if (!(client?.greeting_name || '').trim() || client?.greeting_tone === 'singular') {
-                updates.greeting_name = 'pessoal'
-            }
+            defaultGreeting = firstName || 'amigo'
         }
+        const updates = { greeting_tone: tone, greeting_name: defaultGreeting }
         try {
             await supabase.from('clients').update(updates).eq('id', clientId)
             setClients(prev => prev.map(c => c.id === clientId ? { ...c, ...updates } : c))
@@ -720,9 +719,19 @@ const Dashboard = () => {
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '12px' }}>
-                        <h2 style={{ color: 'var(--text-primary)', margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
-                            Clientes ({clients.length})
-                        </h2>
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <h2 style={{ color: 'var(--text-primary)', margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
+                                Clientes ({clients.length})
+                            </h2>
+                            <select
+                                value={clientSort}
+                                onChange={(e) => setClientSort(e.target.value)}
+                                style={{ background: '#0f0f12', color: '#fff', border: '1px solid #2a2a30', padding: '6px 10px', borderRadius: '6px', fontSize: '0.85rem', cursor: 'pointer' }}
+                            >
+                                <option value="name">Ordem alfabética</option>
+                                <option value="balance_asc">Saldo (menor primeiro)</option>
+                            </select>
+                        </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                             {(() => {
                                 const withGroup = clients.filter(c => c.whatsapp_group_jid).length
@@ -827,53 +836,82 @@ const Dashboard = () => {
                         gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                         gap: '20px'
                     }}>
-                        {clients.map(client => {
-                            const clientLink = `${window.location.origin}/#/c/${client.observacoes}`
-                            const justCopied = copiedId === client.id
-                            return (
-                                <div
-                                    key={client.id}
-                                    onClick={() => handleAdminSelectClient(client.id)}
-                                    className="admin-client-card"
-                                    style={{ position: 'relative' }}
-                                >
-                                    <div className="admin-client-avatar">
-                                        {client.cliente.substr(0, 2).toUpperCase()}
-                                    </div>
-                                    <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem', flex: 1 }}>{client.cliente}</span>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            navigator.clipboard.writeText(clientLink)
-                                            setCopiedId(client.id)
-                                            setTimeout(() => setCopiedId(prev => prev === client.id ? null : prev), 1500)
-                                        }}
-                                        title={justCopied ? 'Link copiado' : 'Copiar link do cliente'}
-                                        aria-label="Copiar link"
-                                        style={{
-                                            background: 'transparent',
-                                            border: 'none',
-                                            cursor: 'pointer',
-                                            padding: '6px',
-                                            borderRadius: '6px',
-                                            color: justCopied ? '#10b981' : 'var(--text-secondary)',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            transition: 'background 0.15s, color 0.15s'
-                                        }}
-                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; if (!justCopied) e.currentTarget.style.color = 'var(--text-primary)' }}
-                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!justCopied) e.currentTarget.style.color = 'var(--text-secondary)' }}
+{(() => {
+                            const balanceInfo = (c) => {
+                                const balance = Number(c.account_balance) || 0
+                                const display = c.account_funding_display || ''
+                                // Cartao: display tem nome de bandeira (Master, VISA, Hipercard etc).
+                                // "Saldo disponível" no display indica pre-pago, mesmo que funding_type
+                                // venha errado da Meta API.
+                                const hasCardName = /Mastercard|Master\s*Card|VISA|Hipercard|Elo|American Express|Amex/i.test(display)
+                                const hasSaldoText = /Saldo dispon/i.test(display)
+                                const isCard = hasCardName && !hasSaldoText
+                                if (isCard) return { label: 'Cartão', color: '#f97316', sortKey: Number.POSITIVE_INFINITY }
+                                if (balance <= 0) return { label: 'Sem saldo', color: '#ef4444', sortKey: 0 }
+                                if (balance < 100) return { label: formatCurrency(balance), color: '#f59e0b', sortKey: balance }
+                                return { label: formatCurrency(balance), color: '#10b981', sortKey: balance }
+                            }
+                            const sorted = [...clients].sort((a, b) => {
+                                if (clientSort === 'balance_asc') {
+                                    return balanceInfo(a).sortKey - balanceInfo(b).sortKey
+                                }
+                                return (a.cliente || '').localeCompare(b.cliente || '', 'pt-BR')
+                            })
+                            return sorted.map(client => {
+                                const clientLink = `${window.location.origin}/#/c/${client.observacoes}`
+                                const justCopied = copiedId === client.id
+                                const info = balanceInfo(client)
+                                return (
+                                    <div
+                                        key={client.id}
+                                        onClick={() => handleAdminSelectClient(client.id)}
+                                        className="admin-client-card"
+                                        style={{ position: 'relative' }}
                                     >
-                                        {justCopied ? (
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                        ) : (
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                                        )}
-                                    </button>
-                                </div>
-                            )
-                        })}
+                                        <div className="admin-client-avatar">
+                                            {client.cliente.substr(0, 2).toUpperCase()}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                            <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{client.cliente}</span>
+                                            <span style={{ color: info.color, fontSize: '0.78rem', fontWeight: '500', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: info.color, display: 'inline-block' }} />
+                                                {info.label}
+                                            </span>
+                                        </div>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                navigator.clipboard.writeText(clientLink)
+                                                setCopiedId(client.id)
+                                                setTimeout(() => setCopiedId(prev => prev === client.id ? null : prev), 1500)
+                                            }}
+                                            title={justCopied ? 'Link copiado' : 'Copiar link do cliente'}
+                                            aria-label="Copiar link"
+                                            style={{
+                                                background: 'transparent',
+                                                border: 'none',
+                                                cursor: 'pointer',
+                                                padding: '6px',
+                                                borderRadius: '6px',
+                                                color: justCopied ? '#10b981' : 'var(--text-secondary)',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                transition: 'background 0.15s, color 0.15s'
+                                            }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; if (!justCopied) e.currentTarget.style.color = 'var(--text-primary)' }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!justCopied) e.currentTarget.style.color = 'var(--text-secondary)' }}
+                                        >
+                                            {justCopied ? (
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                            ) : (
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                            )}
+                                        </button>
+                                    </div>
+                                )
+                            })
+                        })()}
                     </div>
                 </div>
             </div>
