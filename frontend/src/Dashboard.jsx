@@ -33,6 +33,9 @@ const Dashboard = () => {
     const [feedbackResult, setFeedbackResult] = useState(null)
     const [editingGroup, setEditingGroup] = useState(false)
     const [clientSort, setClientSort] = useState('name') // 'name' | 'balance_asc'
+    const [feedbacks, setFeedbacks] = useState([])
+    const [expandedFeedback, setExpandedFeedback] = useState(null)
+    const [modalFeedback, setModalFeedback] = useState(null)
     const [confirmModal, setConfirmModal] = useState(null) // { title, message, onConfirm, dontAskKey }
     const [dontAskAgain, setDontAskAgain] = useState(false)
 
@@ -69,17 +72,18 @@ const Dashboard = () => {
                 return // Access Denied (Implicitly)
             }
 
-            const code = hash.split('#/c/')[1].replace(/\/$/, '').trim()
-            console.log('Detected Client Hash (Trimmed):', code)
-
-            // ADMIN HASH CHECK
-            const ADMIN_HASH = 'master_key_admin_access_2025' // Hardcoded Admin Key
+            const rawCode = hash.split('#/c/')[1].replace(/\/$/, '').trim()
+            // Suporta admin com cliente persistido na URL: #/c/{ADMIN}/{client_observacoes}
+            const ADMIN_HASH = 'master_key_admin_access_2025'
+            const parts = rawCode.split('/')
+            const code = parts[0]
+            const persistedClientHash = parts[1] || null
+            console.log('Detected Client Hash (Trimmed):', code, '| persisted client:', persistedClientHash)
 
             if (code === ADMIN_HASH) {
                 console.log('Admin Access Granted')
                 setAccessGranted(true)
                 setIsAdmin(true)
-                setSelectedClient(null) // Start with NO client selected (Show Grid)
                 setClientName('')
 
                 // Fetch ALL clients for the grid
@@ -92,9 +96,31 @@ const Dashboard = () => {
 
                 if (clientsError) throw clientsError
                 setClients(clientsData || [])
-                loadWhatsAppGroups() // pre-carrega grupos pra dropdown ja vir populado
+                loadWhatsAppGroups()
+
+                if (persistedClientHash) {
+                    // Carrega o cliente persistido na URL
+                    const target = (clientsData || []).find(c => c.observacoes === persistedClientHash)
+                    if (target) {
+                        setSelectedClient(target.id)
+                        setClientName(target.cliente)
+                        setClientDetails(target)
+                        // busca metrics + feedbacks
+                        const { data: metricsData } = await supabase
+                            .from('dashboard_campaign_metrics').select('*')
+                            .eq('client_id', target.id).limit(10000)
+                        setMetrics(metricsData || [])
+                        const { data: fbs } = await supabase.from('client_feedbacks')
+                            .select('*').eq('client_id', target.id)
+                            .order('week_start', { ascending: false })
+                        setFeedbacks(fbs || [])
+                        setLoading(false)
+                        return
+                    }
+                }
+                setSelectedClient(null) // mostra grid
                 setLoading(false)
-                return // Stop here, wait for user to pick a client
+                return
             }
 
             // NORMAL CLIENT FLOW
@@ -117,6 +143,8 @@ const Dashboard = () => {
                 setClientName(clientData.cliente) // Set Name Here
                 setClientDetails(clientData) // Store metadata
                 setAccessGranted(true)
+                // Carrega feedbacks do cliente
+                supabase.from('client_feedbacks').select('*').eq('client_id', clientData.id).order('week_start', { ascending: false }).then(({ data }) => setFeedbacks(data || []))
             } else {
                 console.error('Hash not found in DB')
                 throw new Error('Código de acesso inválido.')
@@ -344,6 +372,13 @@ const Dashboard = () => {
         if (c) {
             setClientName(c.cliente)
             setClientDetails(c) // Set metadata from admin list
+            // Persiste cliente na URL pra sobreviver ao F5
+            const ADMIN_HASH = 'master_key_admin_access_2025'
+            const newHash = `#/c/${ADMIN_HASH}/${c.observacoes}`
+            if (window.location.hash !== newHash) {
+                // Usa history.replaceState pra nao disparar hashchange (evita re-fetchData)
+                window.history.replaceState(null, '', newHash)
+            }
         }
 
         try {
@@ -355,6 +390,9 @@ const Dashboard = () => {
 
             if (metricsError) throw metricsError
             setMetrics(metricsData || [])
+            // Carrega feedbacks do cliente selecionado (admin)
+            const { data: fbs } = await supabase.from('client_feedbacks').select('*').eq('client_id', clientId).order('week_start', { ascending: false })
+            setFeedbacks(fbs || [])
         } catch (e) {
             console.error(e)
             alert('Erro ao carregar dados do cliente')
@@ -600,7 +638,18 @@ const Dashboard = () => {
 
             {isAdmin && selectedClient && (
                 <button
-                    onClick={() => { setSelectedClient(null); setMetrics([]); setClientName('') }}
+                    onClick={() => {
+                        setSelectedClient(null)
+                        setMetrics([])
+                        setClientName('')
+                        setClientDetails(null)
+                        setFeedbacks([])
+                        const ADMIN_HASH = 'master_key_admin_access_2025'
+                        const baseHash = `#/c/${ADMIN_HASH}`
+                        if (window.location.hash !== baseHash) {
+                            window.history.replaceState(null, '', baseHash)
+                        }
+                    }}
                     className="btn-ghost"
                     style={{ marginLeft: '20px' }}
                 >
@@ -635,6 +684,88 @@ const Dashboard = () => {
             </div>
         )
     }
+
+    const feedbackModal = modalFeedback && createPortal(
+        (
+            <div
+                onClick={() => setModalFeedback(null)}
+                style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    zIndex: 100000, padding: '20px', overflowY: 'auto'
+                }}
+            >
+                <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                        background: 'linear-gradient(180deg, #18181c, #0f0f12)',
+                        border: '1px solid #2a2a30', borderRadius: '12px',
+                        padding: '28px', maxWidth: '720px', width: '100%',
+                        maxHeight: '90vh', overflowY: 'auto',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.6)'
+                    }}
+                >
+                    {(() => {
+                        const f = modalFeedback
+                        const ws = new Date(f.week_start + 'T12:00:00')
+                        const we = new Date(ws); we.setDate(ws.getDate() + 6)
+                        const fmt = (d) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' })
+                        return (
+                            <>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', marginBottom: '20px' }}>
+                                    <div>
+                                        <h3 style={{ margin: '0 0 4px 0', color: '#fff', fontSize: '1.2rem', fontWeight: 600 }}>
+                                            Feedback do cliente
+                                        </h3>
+                                        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                            Semana de {fmt(ws)} a {fmt(we)}
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => setModalFeedback(null)}
+                                        style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid #2a2a30', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}
+                                    >Fechar</button>
+                                </div>
+
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                                    <FeedbackField label="Leads recebidos" value={f.leads_recebidos} />
+                                    <FeedbackField label="Conseguiu contatar" value={f.leads_contatados} />
+                                    <FeedbackField label="Não responderam" value={f.leads_nao_responderam} />
+                                    <FeedbackField label="Perfil dos leads" value={f.perfil_leads} />
+                                    <FeedbackField label="Faixa de renda" value={f.faixa_renda} />
+                                    <FeedbackField label="Principal objeção" value={f.principal_objecao === 'Outro' && f.principal_objecao_outro ? `Outro: ${f.principal_objecao_outro}` : f.principal_objecao} />
+                                    <FeedbackField label="Empreendimento de maior interesse" value={f.empreendimento_interesse} />
+                                    <FeedbackField label="Visitas agendadas" value={f.visitas_agendadas} />
+                                    <FeedbackField label="Visitas realizadas" value={f.visitas_realizadas} />
+                                    <FeedbackField label="Agendamentos prox. semana" value={f.agendamentos_proxima_semana} />
+                                    <FeedbackField label="Algum lead em negociação?" value={f.lead_em_negociacao == null ? null : (f.lead_em_negociacao ? 'Sim' : 'Não')} />
+                                </div>
+
+                                {f.ajustes_campanha && (
+                                    <div style={{ marginTop: '14px', padding: '14px 16px', background: '#0f0f12', borderLeft: '3px solid #f97316', borderRadius: '6px' }}>
+                                        <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                                            O que devemos ajustar na campanha
+                                        </div>
+                                        <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                                            {f.ajustes_campanha}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid #2a2a30', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
+                                    {f.sent_at && <>Enviado por nós: {new Date(f.sent_at).toLocaleString('pt-BR')}<br /></>}
+                                    {f.submitted_at && <>Cliente respondeu: {new Date(f.submitted_at).toLocaleString('pt-BR')}<br /></>}
+                                    {f.updated_at && f.updated_at !== f.submitted_at && <>Última edição do cliente: {new Date(f.updated_at).toLocaleString('pt-BR')}</>}
+                                </div>
+                            </>
+                        )
+                    })()}
+                </div>
+            </div>
+        ),
+        document.body
+    )
 
     const confirmDialog = confirmModal && createPortal(
         (
@@ -716,6 +847,7 @@ const Dashboard = () => {
         return (
             <div className="dashboard-container animate-fade-in">
                 {confirmDialog}
+                {feedbackModal}
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '12px' }}>
@@ -923,6 +1055,7 @@ const Dashboard = () => {
     return (
         <div className="dashboard-container animate-fade-in">
             {confirmDialog}
+            {feedbackModal}
             <Header />
 
             {isAdmin && clientDetails && (
@@ -1071,6 +1204,32 @@ const Dashboard = () => {
                     </div>
                 )
             })()}
+
+            {!isAdmin && clientDetails && (
+                <div className="glass-panel" style={{ padding: '16px 20px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', borderLeft: '3px solid #f97316' }}>
+                    <div>
+                        <div style={{ color: '#fff', fontSize: '1rem', fontWeight: 600, marginBottom: '4px' }}>
+                            Passar feedback da semana
+                        </div>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                            Leva 2 minutinhos e nos ajuda a calibrar suas campanhas.
+                        </div>
+                    </div>
+                    <a
+                        href={`#/feedback/${clientDetails.observacoes}`}
+                        style={{
+                            background: 'linear-gradient(135deg, #f97316, #ea580c)',
+                            color: '#fff', textDecoration: 'none',
+                            padding: '10px 22px', borderRadius: '8px',
+                            fontWeight: 600, fontSize: '0.9rem',
+                            boxShadow: '0 4px 12px rgba(249,115,22,0.3)',
+                            whiteSpace: 'nowrap'
+                        }}
+                    >
+                        Abrir formulário →
+                    </a>
+                </div>
+            )}
 
             <div className="filters-bar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
                 <select
@@ -1234,6 +1393,129 @@ const Dashboard = () => {
                 )
             })()}
 
+            {/* Feedbacks semanais */}
+            {isAdmin && clientDetails && (
+                <div className="glass-panel" style={{ marginBottom: 32, padding: 28 }}>
+                    <div className="section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            Feedbacks semanais ({feedbacks?.length || 0}) <Activity size={18} color="var(--text-secondary)" />
+                        </span>
+                        {clientDetails.observacoes && (() => {
+                            const formLink = `${window.location.origin}/#/feedback/${clientDetails.observacoes}`
+                            const copied = copiedId === 'feedback-' + clientDetails.id
+                            return (
+                                <button
+                                    onClick={() => {
+                                        navigator.clipboard.writeText(formLink)
+                                        setCopiedId('feedback-' + clientDetails.id)
+                                        setTimeout(() => setCopiedId(prev => prev === 'feedback-' + clientDetails.id ? null : prev), 1500)
+                                    }}
+                                    style={{
+                                        background: copied ? 'rgba(16,185,129,0.15)' : '#0f0f12',
+                                        color: copied ? '#10b981' : 'var(--text-primary)',
+                                        border: `1px solid ${copied ? '#10b981' : '#2a2a30'}`,
+                                        padding: '8px 14px', borderRadius: '6px',
+                                        fontSize: '0.8rem', cursor: 'pointer', textTransform: 'none', letterSpacing: 0, fontWeight: 500
+                                    }}
+                                >
+                                    {copied ? '✓ Link copiado' : 'Copiar link do formulário'}
+                                </button>
+                            )
+                        })()}
+                    </div>
+                    {(!feedbacks || feedbacks.length === 0) && (
+                        <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '0.95rem' }}>
+                                Nenhum feedback recebido ainda.
+                            </p>
+                            <p style={{ margin: 0, fontSize: '0.85rem' }}>
+                                O cliente preenche pelo link acima ou recebe automaticamente toda <b>segunda 10h</b> pelo WhatsApp.
+                            </p>
+                        </div>
+                    )}
+                    {feedbacks && feedbacks.length > 0 && (
+                    <div className="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Semana</th>
+                                    <th>Status</th>
+                                    <th>Leads</th>
+                                    <th>Contatados</th>
+                                    <th>Perfil</th>
+                                    <th>Visitas</th>
+                                    <th>Negociação</th>
+                                    <th style={{ textAlign: 'right' }}></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {feedbacks.map((f) => {
+                                    const ws = new Date(f.week_start + 'T12:00:00')
+                                    const we = new Date(ws); we.setDate(ws.getDate() + 6)
+                                    const fmt = (d) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+                                    const status = computeFeedbackStatus(f)
+                                    const hasResponse = f.leads_recebidos != null || f.visitas_agendadas != null
+                                    return (
+                                        <tr key={f.id}>
+                                            <td>{fmt(ws)} → {fmt(we)}</td>
+                                            <td>
+                                                <span style={{
+                                                    background: status.bg, color: status.color,
+                                                    padding: '3px 10px', borderRadius: '12px',
+                                                    fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap',
+                                                    display: 'inline-block'
+                                                }}>{status.label}</span>
+                                            </td>
+                                            <td style={{ fontWeight: hasResponse ? 600 : 400, color: hasResponse ? 'inherit' : 'var(--text-secondary)' }}>{f.leads_recebidos ?? '—'}</td>
+                                            <td>{f.leads_contatados ?? '—'}</td>
+                                            <td style={{ color: f.perfil_leads === 'Todos' || f.perfil_leads === 'Maioria' ? '#10b981' : f.perfil_leads === 'Poucos' || f.perfil_leads === 'Nenhum' ? '#ef4444' : 'var(--text-primary)' }}>
+                                                {f.perfil_leads ?? '—'}
+                                            </td>
+                                            <td>{f.visitas_realizadas ?? '—'}/{f.visitas_agendadas ?? '—'}</td>
+                                            <td>
+                                                {f.lead_em_negociacao == null ? '—' : (
+                                                    <span style={{ color: f.lead_em_negociacao ? '#10b981' : 'var(--text-secondary)', fontWeight: f.lead_em_negociacao ? 600 : 400 }}>
+                                                        {f.lead_em_negociacao ? 'Sim' : 'Não'}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td style={{ textAlign: 'right' }}>
+                                                {hasResponse ? (
+                                                    <button
+                                                        onClick={() => setModalFeedback(f)}
+                                                        style={{
+                                                            background: 'transparent', color: '#f97316',
+                                                            border: '1px solid #f97316', padding: '5px 12px',
+                                                            borderRadius: '6px', fontSize: '0.78rem',
+                                                            cursor: 'pointer', fontWeight: 500
+                                                        }}
+                                                    >Ver respostas</button>
+                                                ) : (
+                                                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
+                                                        sem resposta
+                                                    </span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                    )}
+                    {feedbacks?.[0]?.ajustes_campanha && (
+                        <div style={{ marginTop: '16px', padding: '14px 16px', background: 'rgba(249,115,22,0.06)', borderLeft: '3px solid #f97316', borderRadius: '6px' }}>
+                            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1.5px', color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                                Última observação do cliente
+                            </div>
+                            <div style={{ color: 'var(--text-primary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
+                                "{feedbacks[0].ajustes_campanha}"
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Bottom Section */}
             <div className="bottom-grid">
                 <div className="bottom-card glass-panel">
@@ -1320,6 +1602,42 @@ const Dashboard = () => {
         </div>
     )
 }
+
+// Calcula o status de um feedback (1 row na tabela client_feedbacks)
+// - Aguardando resposta: sent_at preenchido + sem resposta < 3 dias
+// - Atrasado: sent_at + 3 dias e sem resposta
+// - Respondido: tem submitted_at e nunca foi editado
+// - Editado: tem submitted_at e updated_at significativamente depois
+// - Espontâneo: respondeu sem termos enviado link
+function computeFeedbackStatus(f) {
+    const sent = f.sent_at ? new Date(f.sent_at) : null
+    const submitted = f.submitted_at ? new Date(f.submitted_at) : null
+    const updated = f.updated_at ? new Date(f.updated_at) : null
+    const hasResponse = f.leads_recebidos != null || f.visitas_agendadas != null
+    if (hasResponse && submitted) {
+        const editedSignificantly = updated && (updated.getTime() - submitted.getTime()) > 60_000
+        if (editedSignificantly) return { label: 'Editado', color: '#a855f7', bg: 'rgba(168,85,247,0.12)' }
+        if (!sent) return { label: 'Respondido (espontâneo)', color: '#10b981', bg: 'rgba(16,185,129,0.12)' }
+        return { label: 'Respondido', color: '#10b981', bg: 'rgba(16,185,129,0.12)' }
+    }
+    if (sent) {
+        const days = (Date.now() - sent.getTime()) / 86_400_000
+        if (days > 3) return { label: 'Atrasado', color: '#ef4444', bg: 'rgba(239,68,68,0.12)' }
+        return { label: 'Enviado', color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' }
+    }
+    return { label: 'Não enviado', color: '#71717a', bg: 'rgba(113,113,122,0.15)' }
+}
+
+const FeedbackField = ({ label, value }) => (
+    <div>
+        <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '1.5px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+            {label}
+        </div>
+        <div style={{ color: value == null || value === '' ? 'var(--text-secondary)' : 'var(--text-primary)', fontSize: '0.92rem', fontWeight: value == null || value === '' ? 400 : 500 }}>
+            {value == null || value === '' ? '—' : String(value)}
+        </div>
+    </div>
+)
 
 const MetricCard = ({ title, value, sub, icon, highlight }) => (
     <div className={`metric-card glass-panel ${highlight ? 'highlight' : ''}`}>
