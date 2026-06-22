@@ -5,7 +5,7 @@ import {
     BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart
 } from 'recharts'
 import {
-    LayoutDashboard, Users, DollarSign, MousePointer2, Eye, TrendingUp, Activity, Filter
+    LayoutDashboard, Users, DollarSign, MousePointer2, Eye, TrendingUp, Activity, Filter, Archive, RotateCcw
 } from 'lucide-react'
 
 const Dashboard = () => {
@@ -27,6 +27,7 @@ const Dashboard = () => {
     const [createdLink, setCreatedLink] = useState(null)
     const [copiedId, setCopiedId] = useState(null)
     const [showOnlyActive, setShowOnlyActive] = useState(false)
+    const [showInactive, setShowInactive] = useState(false)
     const [waGroups, setWaGroups] = useState(null) // null = nao carregado, [] = vazio
     const [loadingGroups, setLoadingGroups] = useState(false)
     const [sendingFeedback, setSendingFeedback] = useState(null) // 'all' | client_id | null
@@ -86,12 +87,9 @@ const Dashboard = () => {
                 setIsAdmin(true)
                 setClientName('')
 
-                // Fetch ALL clients for the grid
-                console.log('Fetching Clients for Admin...')
                 const { data: clientsData, error: clientsError } = await supabase
                     .from('clients')
                     .select('*')
-                    .eq('ativo', true)
                     .order('cliente')
 
                 if (clientsError) throw clientsError
@@ -241,7 +239,6 @@ const Dashboard = () => {
             const { data: refreshed } = await supabase
                 .from('clients')
                 .select('*')
-                .eq('ativo', true)
                 .order('cliente')
             setClients(refreshed || [])
 
@@ -252,6 +249,37 @@ const Dashboard = () => {
             alert('Erro ao criar cliente: ' + (e.message || e))
         } finally {
             setCreating(false)
+        }
+    }
+
+    const handleToggleClientActive = async (clientId, clientName, newStatus) => {
+        const actionText = newStatus ? 'reativar' : 'arquivar'
+        if (!window.confirm(`Tem certeza que deseja ${actionText} o cliente "${clientName}"?`)) {
+            return
+        }
+        
+        try {
+            const { error } = await supabase
+                .from('clients')
+                .update({ ativo: newStatus })
+                .eq('id', clientId)
+                
+            if (error) throw error
+            
+            // Atualiza localmente
+            setClients(prev => prev.map(c => c.id === clientId ? { ...c, ativo: newStatus } : c))
+            
+            // Se inativou o cliente atualmente selecionado, deseleciona-o
+            if (!newStatus && selectedClient === clientId) {
+                setSelectedClient(null)
+                setClientName('')
+                setClientDetails(null)
+                setMetrics([])
+                setFeedbacks([])
+            }
+        } catch (e) {
+            console.error(e)
+            alert(`Erro ao ${actionText} o cliente: ` + (e.message || e))
         }
     }
 
@@ -851,9 +879,9 @@ const Dashboard = () => {
                 <Header />
                 <div style={{ maxWidth: '1200px', margin: '0 auto', paddingTop: '20px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '12px' }}>
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
                             <h2 style={{ color: 'var(--text-primary)', margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
-                                Clientes ({clients.length})
+                                Clientes ({clients.filter(c => showInactive ? true : c.ativo).length})
                             </h2>
                             <select
                                 value={clientSort}
@@ -863,6 +891,15 @@ const Dashboard = () => {
                                 <option value="name">Ordem alfabética</option>
                                 <option value="balance_asc">Saldo (menor primeiro)</option>
                             </select>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={showInactive}
+                                    onChange={(e) => setShowInactive(e.target.checked)}
+                                    style={{ accentColor: '#3b82f6', cursor: 'pointer' }}
+                                />
+                                Mostrar arquivados
+                            </label>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                             {(() => {
@@ -983,7 +1020,8 @@ const Dashboard = () => {
                                 if (balance < 100) return { label: formatCurrency(balance), color: '#f59e0b', sortKey: balance }
                                 return { label: formatCurrency(balance), color: '#10b981', sortKey: balance }
                             }
-                            const sorted = [...clients].sort((a, b) => {
+                            const filteredClients = clients.filter(c => showInactive ? true : c.ativo)
+                            const sorted = [...filteredClients].sort((a, b) => {
                                 if (clientSort === 'balance_asc') {
                                     return balanceInfo(a).sortKey - balanceInfo(b).sortKey
                                 }
@@ -998,48 +1036,80 @@ const Dashboard = () => {
                                         key={client.id}
                                         onClick={() => handleAdminSelectClient(client.id)}
                                         className="admin-client-card"
-                                        style={{ position: 'relative' }}
+                                        style={{ position: 'relative', opacity: client.ativo ? 1 : 0.6 }}
                                     >
                                         <div className="admin-client-avatar">
                                             {client.cliente.substr(0, 2).toUpperCase()}
                                         </div>
                                         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                            <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{client.cliente}</span>
+                                            <span style={{ color: 'var(--text-primary)', fontWeight: '500', fontSize: '1.05rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                {client.cliente} {!client.ativo && <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.08)', padding: '2px 6px', borderRadius: '4px', marginLeft: '6px' }}>Arquivado</span>}
+                                            </span>
                                             <span style={{ color: info.color, fontSize: '0.78rem', fontWeight: '500', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                                                 <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: info.color, display: 'inline-block' }} />
                                                 {info.label}
                                             </span>
                                         </div>
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation()
-                                                navigator.clipboard.writeText(clientLink)
-                                                setCopiedId(client.id)
-                                                setTimeout(() => setCopiedId(prev => prev === client.id ? null : prev), 1500)
-                                            }}
-                                            title={justCopied ? 'Link copiado' : 'Copiar link do cliente'}
-                                            aria-label="Copiar link"
-                                            style={{
-                                                background: 'transparent',
-                                                border: 'none',
-                                                cursor: 'pointer',
-                                                padding: '6px',
-                                                borderRadius: '6px',
-                                                color: justCopied ? '#10b981' : 'var(--text-secondary)',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                transition: 'background 0.15s, color 0.15s'
-                                            }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; if (!justCopied) e.currentTarget.style.color = 'var(--text-primary)' }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!justCopied) e.currentTarget.style.color = 'var(--text-secondary)' }}
-                                        >
-                                            {justCopied ? (
-                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                            ) : (
-                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                                            )}
-                                        </button>
+                                        <div style={{ display: 'flex', gap: '4px' }}>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    navigator.clipboard.writeText(clientLink)
+                                                    setCopiedId(client.id)
+                                                    setTimeout(() => setCopiedId(prev => prev === client.id ? null : prev), 1500)
+                                                }}
+                                                title={justCopied ? 'Link copiado' : 'Copiar link do cliente'}
+                                                aria-label="Copiar link"
+                                                style={{
+                                                    background: 'transparent',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    padding: '6px',
+                                                    borderRadius: '6px',
+                                                    color: justCopied ? '#10b981' : 'var(--text-secondary)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'background 0.15s, color 0.15s'
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; if (!justCopied) e.currentTarget.style.color = 'var(--text-primary)' }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!justCopied) e.currentTarget.style.color = 'var(--text-secondary)' }}
+                                            >
+                                                {justCopied ? (
+                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                ) : (
+                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                                )}
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    handleToggleClientActive(client.id, client.cliente, !client.ativo)
+                                                }}
+                                                title={client.ativo ? 'Arquivar cliente' : 'Reativar cliente'}
+                                                aria-label={client.ativo ? 'Arquivar cliente' : 'Reativar cliente'}
+                                                style={{
+                                                    background: 'transparent',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    padding: '6px',
+                                                    borderRadius: '6px',
+                                                    color: 'var(--text-secondary)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'background 0.15s, color 0.15s'
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = client.ativo ? '#ef4444' : '#10b981' }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+                                            >
+                                                {client.ativo ? (
+                                                    <Archive size={16} />
+                                                ) : (
+                                                    <RotateCcw size={16} />
+                                                )}
+                                            </button>
+                                        </div>
                                     </div>
                                 )
                             })
